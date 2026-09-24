@@ -7,6 +7,7 @@ import {
     StyleSheet,
     Text,
     TextInput,
+    TouchableOpacity,
     View,
 } from "react-native";
 import { supabase } from "../../supabase";
@@ -64,9 +65,6 @@ export default function Home() {
 
       if (error) throw error;
 
-      // Opcional: Podés comentar o borrar esta alerta si te resulta molesta cada vez que guardás
-      Alert.alert("¡Éxito!", "El gasto se guardó correctamente.");
-
       setMonto("");
       setDescripcion("");
       fetchGastos();
@@ -77,24 +75,68 @@ export default function Home() {
     }
   }
 
+  // NUEVO: Función para eliminar un gasto
+  async function eliminarGasto(id) {
+    // Primero, pedimos confirmación al usuario
+    Alert.alert(
+      "Eliminar Gasto",
+      "¿Estás seguro de que querés borrar este gasto?",
+      [
+        {
+          text: "Cancelar",
+          style: "cancel",
+        },
+        {
+          text: "Eliminar",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              // Le decimos a Supabase que borre la fila con este ID
+              const { error } = await supabase
+                .from("transactions")
+                .delete()
+                .eq("id", id);
+
+              if (error) throw error;
+
+              // Volvemos a cargar la lista para que desaparezca
+              fetchGastos();
+            } catch (error) {
+              Alert.alert("Error al eliminar", error.message);
+            }
+          },
+        },
+      ],
+    );
+  }
+
   async function signOut() {
     await supabase.auth.signOut();
     router.replace("/");
   }
 
-  // NUEVO: Calculamos el total sumando todos los 'amount' del array de gastos
   const totalGastado = gastos.reduce(
     (acumulador, gasto) => acumulador + gasto.amount,
     0,
   );
 
+  // ACTUALIZADO: Agregamos el botón de borrar (TouchableOpacity) a cada fila
   const renderGasto = ({ item }) => (
     <View style={styles.gastoItem}>
       <View style={styles.gastoInfo}>
         <Text style={styles.gastoDescripcion}>{item.description}</Text>
         <Text style={styles.gastoFecha}>{item.date}</Text>
       </View>
-      <Text style={styles.gastoMonto}>${item.amount}</Text>
+      <View style={styles.gastoAcciones}>
+        <Text style={styles.gastoMonto}>${item.amount}</Text>
+        {/* Usamos TouchableOpacity para crear un botón personalizado simple */}
+        <TouchableOpacity
+          style={styles.deleteButton}
+          onPress={() => eliminarGasto(item.id)}
+        >
+          <Text style={styles.deleteButtonText}>X</Text>
+        </TouchableOpacity>
+      </View>
     </View>
   );
 
@@ -102,14 +144,11 @@ export default function Home() {
     <View style={styles.container}>
       <Text style={styles.title}>Panel General</Text>
 
-      {/* NUEVO: Tarjeta de Total Gastado */}
       <View style={styles.totalCard}>
         <Text style={styles.totalLabel}>Total Gastado</Text>
-        {/* Mostramos el total con 2 decimales para que se vea como moneda */}
         <Text style={styles.totalAmount}>${totalGastado.toFixed(2)}</Text>
       </View>
 
-      {/* Formulario */}
       <View style={styles.card}>
         <Text style={styles.cardTitle}>Nuevo Gasto</Text>
 
@@ -135,7 +174,6 @@ export default function Home() {
         />
       </View>
 
-      {/* Lista de Gastos */}
       <View style={styles.listContainer}>
         <Text style={styles.listTitle}>Últimos Movimientos</Text>
         <FlatList
@@ -170,10 +208,8 @@ const styles = StyleSheet.create({
     textAlign: "center",
     color: "#333",
   },
-
-  // Estilos de la nueva tarjeta de Total
   totalCard: {
-    backgroundColor: "#007bff", // Azul destacado
+    backgroundColor: "#007bff",
     padding: 20,
     borderRadius: 12,
     alignItems: "center",
@@ -185,17 +221,12 @@ const styles = StyleSheet.create({
     elevation: 5,
   },
   totalLabel: {
-    color: "rgba(255, 255, 255, 0.8)", // Blanco translúcido
+    color: "rgba(255, 255, 255, 0.8)",
     fontSize: 16,
     fontWeight: "600",
     marginBottom: 5,
   },
-  totalAmount: {
-    color: "white",
-    fontSize: 36,
-    fontWeight: "bold",
-  },
-
+  totalAmount: { color: "white", fontSize: 36, fontWeight: "bold" },
   card: {
     backgroundColor: "white",
     padding: 20,
@@ -223,16 +254,14 @@ const styles = StyleSheet.create({
     fontSize: 16,
     marginBottom: 15,
   },
-  listContainer: {
-    flex: 1,
-    marginBottom: 20,
-  },
+  listContainer: { flex: 1, marginBottom: 20 },
   listTitle: {
     fontSize: 18,
     fontWeight: "600",
     marginBottom: 10,
     color: "#333",
   },
+
   gastoItem: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -247,7 +276,25 @@ const styles = StyleSheet.create({
   gastoInfo: { flex: 1 },
   gastoDescripcion: { fontSize: 16, fontWeight: "bold", color: "#333" },
   gastoFecha: { fontSize: 12, color: "#888", marginTop: 4 },
-  gastoMonto: { fontSize: 18, fontWeight: "bold", color: "#ff3b30" },
+
+  // NUEVOS ESTILOS para acomodar el botón
+  gastoAcciones: { flexDirection: "row", alignItems: "center" },
+  gastoMonto: {
+    fontSize: 18,
+    fontWeight: "bold",
+    color: "#ff3b30",
+    marginRight: 15,
+  },
+  deleteButton: {
+    backgroundColor: "#ff3b30",
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  deleteButtonText: { color: "white", fontWeight: "bold", fontSize: 14 },
+
   emptyText: {
     textAlign: "center",
     color: "#888",
