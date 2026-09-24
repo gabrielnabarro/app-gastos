@@ -1,98 +1,146 @@
-import * as Device from 'expo-device';
-import { Platform, StyleSheet } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { useRouter } from "expo-router";
+import { useEffect, useState } from "react";
+import { Alert, Button, StyleSheet, Text, TextInput, View } from "react-native";
+import { supabase } from "../../supabase";
 
-import { AnimatedIcon } from '@/components/animated-icon';
-import { HintRow } from '@/components/hint-row';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { WebBadge } from '@/components/web-badge';
-import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
+export default function App() {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+  const router = useRouter();
 
-function getDevMenuHint() {
-  if (Platform.OS === 'web') {
-    return <ThemedText type="small">use browser devtools</ThemedText>;
-  }
-  if (Device.isDevice) {
-    return (
-      <ThemedText type="small">
-        shake device or press <ThemedText type="code">m</ThemedText> in terminal
-      </ThemedText>
+  useEffect(() => {
+    // Revisamos si ya hay sesión al abrir la app
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session) {
+        setTimeout(() => router.replace("/home"), 100);
+      }
+    });
+
+    // Escuchamos si el usuario acaba de iniciar sesión
+    const { data: authListener } = supabase.auth.onAuthStateChange(
+      (_event, session) => {
+        if (session) {
+          setTimeout(() => router.replace("/home"), 100);
+        }
+      },
     );
+
+    return () => {
+      authListener.subscription.unsubscribe();
+    };
+  }, []);
+
+  async function signInWithEmail() {
+    if (!email || !password) {
+      Alert.alert("Atención", "Por favor completá todos los campos");
+      return;
+    }
+    setLoading(true);
+    try {
+      const { error } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password: password,
+      });
+      if (error) Alert.alert("Error al iniciar sesión", error.message);
+    } catch (e) {
+      Alert.alert("Error inesperado", "Ocurrió un problema de conexión.");
+    } finally {
+      setLoading(false);
+    }
   }
-  const shortcut = Platform.OS === 'android' ? 'cmd+m (or ctrl+m)' : 'cmd+d';
+
+  async function signUpWithEmail() {
+    if (!email || !password) {
+      Alert.alert("Atención", "Por favor completá todos los campos");
+      return;
+    }
+    setLoading(true);
+    try {
+      const { error } = await supabase.auth.signUp({
+        email: email.trim(),
+        password: password,
+      });
+      if (error) {
+        Alert.alert("Error al registrarse", error.message);
+      } else {
+        Alert.alert("¡Éxito!", "Usuario registrado. Ya podés iniciar sesión.");
+      }
+    } catch (e) {
+      Alert.alert("Error inesperado", "Ocurrió un problema de conexión.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
-    <ThemedText type="small">
-      press <ThemedText type="code">{shortcut}</ThemedText>
-    </ThemedText>
-  );
-}
+    <View style={styles.container}>
+      <Text style={styles.title}>Mi App de Gastos</Text>
 
-export default function HomeScreen() {
-  return (
-    <ThemedView style={styles.container}>
-      <SafeAreaView style={styles.safeArea}>
-        <ThemedView style={styles.heroSection}>
-          <AnimatedIcon />
-          <ThemedText type="title" style={styles.title}>
-            Welcome to&nbsp;Expo
-          </ThemedText>
-        </ThemedView>
+      <View style={styles.inputContainer}>
+        <TextInput
+          style={styles.input}
+          onChangeText={setEmail}
+          value={email}
+          placeholder="Correo electrónico"
+          autoCapitalize="none"
+          keyboardType="email-address"
+        />
+      </View>
 
-        <ThemedText type="code" style={styles.code}>
-          get started
-        </ThemedText>
+      <View style={styles.inputContainer}>
+        <TextInput
+          style={styles.input}
+          onChangeText={setPassword}
+          value={password}
+          secureTextEntry
+          placeholder="Contraseña"
+          autoCapitalize="none"
+        />
+      </View>
 
-        <ThemedView type="backgroundElement" style={styles.stepContainer}>
-          <HintRow
-            title="Try editing"
-            hint={<ThemedText type="code">src/app/index.tsx</ThemedText>}
-          />
-          <HintRow title="Dev tools" hint={getDevMenuHint()} />
-          <HintRow
-            title="Fresh start"
-            hint={<ThemedText type="code">npm run reset-project</ThemedText>}
-          />
-        </ThemedView>
+      <View style={styles.buttonContainer}>
+        <Button
+          title="Iniciar Sesión"
+          disabled={loading}
+          onPress={signInWithEmail}
+        />
+      </View>
 
-        {Platform.OS === 'web' && <WebBadge />}
-      </SafeAreaView>
-    </ThemedView>
+      <View style={styles.buttonContainer}>
+        <Button
+          title="Registrarme"
+          disabled={loading}
+          onPress={signUpWithEmail}
+        />
+      </View>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    justifyContent: 'center',
-    flexDirection: 'row',
-  },
-  safeArea: {
-    flex: 1,
-    paddingHorizontal: Spacing.four,
-    alignItems: 'center',
-    gap: Spacing.three,
-    paddingBottom: BottomTabInset + Spacing.three,
-    maxWidth: MaxContentWidth,
-  },
-  heroSection: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    flex: 1,
-    paddingHorizontal: Spacing.four,
-    gap: Spacing.four,
+    padding: 20,
+    justifyContent: "center",
+    backgroundColor: "#f5f5f5",
   },
   title: {
-    textAlign: 'center',
+    fontSize: 28,
+    fontWeight: "bold",
+    textAlign: "center",
+    marginBottom: 40,
+    color: "#333",
   },
-  code: {
-    textTransform: 'uppercase',
+  inputContainer: { marginBottom: 15 },
+  input: {
+    backgroundColor: "white",
+    paddingHorizontal: 15,
+    paddingVertical: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#ddd",
+    fontSize: 16,
   },
-  stepContainer: {
-    gap: Spacing.three,
-    alignSelf: 'stretch',
-    paddingHorizontal: Spacing.three,
-    paddingVertical: Spacing.four,
-    borderRadius: Spacing.four,
-  },
+  buttonContainer: { marginTop: 10, width: "100%" },
 });
