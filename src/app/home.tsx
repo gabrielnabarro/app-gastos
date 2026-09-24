@@ -4,6 +4,7 @@ import {
     Alert,
     Button,
     FlatList,
+    ScrollView,
     StyleSheet,
     Text,
     TextInput,
@@ -20,15 +21,38 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [gastos, setGastos] = useState([]);
 
+  // Estados para categorías
+  const [categorias, setCategorias] = useState([]);
+  const [categoriaSeleccionada, setCategoriaSeleccionada] = useState(null);
+
   useEffect(() => {
+    fetchCategorias();
     fetchGastos();
   }, []);
 
-  async function fetchGastos() {
+  async function fetchCategorias() {
     try {
       const { data, error } = await supabase
-        .from("transactions")
+        .from("categories")
         .select("*")
+        .order("name", { ascending: true });
+
+      if (error) throw error;
+      setCategorias(data || []);
+      if (data && data.length > 0) {
+        setCategoriaSeleccionada(data[0].id);
+      }
+    } catch (error) {
+      console.error("Error al cargar categorías:", error.message);
+    }
+  }
+
+  async function fetchGastos() {
+    try {
+      // Traemos el gasto junto con el nombre de su categoría asociada
+      const { data, error } = await supabase
+        .from("transactions")
+        .select("*, categories(name)")
         .order("date", { ascending: false })
         .order("created_at", { ascending: false });
 
@@ -59,6 +83,7 @@ export default function Home() {
           amount: parseFloat(monto),
           description: descripcion,
           user_id: user.id,
+          category_id: categoriaSeleccionada,
           date: new Date().toISOString().split("T")[0],
         },
       ]);
@@ -75,31 +100,23 @@ export default function Home() {
     }
   }
 
-  // NUEVO: Función para eliminar un gasto
   async function eliminarGasto(id) {
-    // Primero, pedimos confirmación al usuario
     Alert.alert(
       "Eliminar Gasto",
       "¿Estás seguro de que querés borrar este gasto?",
       [
-        {
-          text: "Cancelar",
-          style: "cancel",
-        },
+        { text: "Cancelar", style: "cancel" },
         {
           text: "Eliminar",
           style: "destructive",
           onPress: async () => {
             try {
-              // Le decimos a Supabase que borre la fila con este ID
               const { error } = await supabase
                 .from("transactions")
                 .delete()
                 .eq("id", id);
 
               if (error) throw error;
-
-              // Volvemos a cargar la lista para que desaparezca
               fetchGastos();
             } catch (error) {
               Alert.alert("Error al eliminar", error.message);
@@ -120,21 +137,28 @@ export default function Home() {
     0,
   );
 
-  // ACTUALIZADO: Agregamos el botón de borrar (TouchableOpacity) a cada fila
   const renderGasto = ({ item }) => (
     <View style={styles.gastoItem}>
       <View style={styles.gastoInfo}>
         <Text style={styles.gastoDescripcion}>{item.description}</Text>
-        <Text style={styles.gastoFecha}>{item.date}</Text>
+        <View style={styles.metaRow}>
+          <Text style={styles.gastoFecha}>{item.date}</Text>
+          {item.categories?.name && (
+            <View style={styles.categoriaTag}>
+              <Text style={styles.categoriaTagText}>
+                {item.categories.name}
+              </Text>
+            </View>
+          )}
+        </View>
       </View>
       <View style={styles.gastoAcciones}>
         <Text style={styles.gastoMonto}>${item.amount}</Text>
-        {/* Usamos TouchableOpacity para crear un botón personalizado simple */}
         <TouchableOpacity
           style={styles.deleteButton}
           onPress={() => eliminarGasto(item.id)}
         >
-          <Text style={styles.deleteButtonText}>X</Text>
+          <Text style={styles.deleteButtonText}>✕</Text>
         </TouchableOpacity>
       </View>
     </View>
@@ -155,6 +179,7 @@ export default function Home() {
         <TextInput
           style={styles.input}
           placeholder="Monto (ej. 1500)"
+          placeholderTextColor="#888"
           keyboardType="numeric"
           value={monto}
           onChangeText={setMonto}
@@ -163,9 +188,38 @@ export default function Home() {
         <TextInput
           style={styles.input}
           placeholder="Descripción (ej. Supermercado)"
+          placeholderTextColor="#888"
           value={descripcion}
           onChangeText={setDescripcion}
         />
+
+        {/* Selector de Categorías Horizontal */}
+        <Text style={styles.labelCategoria}>Categoría:</Text>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={styles.categoriesScroll}
+        >
+          {categorias.map((cat) => {
+            const isSelected = categoriaSeleccionada === cat.id;
+            return (
+              <TouchableOpacity
+                key={cat.id}
+                style={[styles.chip, isSelected && styles.chipSelected]}
+                onPress={() => setCategoriaSeleccionada(cat.id)}
+              >
+                <Text
+                  style={[
+                    styles.chipText,
+                    isSelected && styles.chipTextSelected,
+                  ]}
+                >
+                  {cat.name}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
 
         <Button
           title={loading ? "Guardando..." : "Guardar Gasto"}
@@ -252,8 +306,27 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#ddd",
     fontSize: 16,
-    marginBottom: 15,
+    marginBottom: 12,
   },
+
+  labelCategoria: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#555",
+    marginBottom: 8,
+  },
+  categoriesScroll: { flexDirection: "row", marginBottom: 15 },
+  chip: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
+    backgroundColor: "#ececec",
+    marginRight: 8,
+  },
+  chipSelected: { backgroundColor: "#007bff" },
+  chipText: { fontSize: 13, color: "#444", fontWeight: "500" },
+  chipTextSelected: { color: "#fff", fontWeight: "bold" },
+
   listContainer: { flex: 1, marginBottom: 20 },
   listTitle: {
     fontSize: 18,
@@ -275,9 +348,16 @@ const styles = StyleSheet.create({
   },
   gastoInfo: { flex: 1 },
   gastoDescripcion: { fontSize: 16, fontWeight: "bold", color: "#333" },
-  gastoFecha: { fontSize: 12, color: "#888", marginTop: 4 },
+  metaRow: { flexDirection: "row", alignItems: "center", marginTop: 4 },
+  gastoFecha: { fontSize: 12, color: "#888", marginRight: 8 },
+  categoriaTag: {
+    backgroundColor: "#eef4ff",
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 10,
+  },
+  categoriaTagText: { fontSize: 11, color: "#007bff", fontWeight: "600" },
 
-  // NUEVOS ESTILOS para acomodar el botón
   gastoAcciones: { flexDirection: "row", alignItems: "center" },
   gastoMonto: {
     fontSize: 18,
@@ -287,13 +367,13 @@ const styles = StyleSheet.create({
   },
   deleteButton: {
     backgroundColor: "#ff3b30",
-    width: 30,
-    height: 30,
-    borderRadius: 15,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
     justifyContent: "center",
     alignItems: "center",
   },
-  deleteButtonText: { color: "white", fontWeight: "bold", fontSize: 14 },
+  deleteButtonText: { color: "white", fontWeight: "bold", fontSize: 13 },
 
   emptyText: {
     textAlign: "center",
