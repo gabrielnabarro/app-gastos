@@ -1,17 +1,17 @@
 import { useRouter } from "expo-router";
 import { useEffect, useState } from "react";
 import {
-    Alert,
-    Button,
-    FlatList,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  Alert,
+  Button,
+  FlatList,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from "react-native";
-import { supabase } from "../../supabase";
+import { supabase } from "../../../supabase";
 
 export default function Home() {
   const router = useRouter();
@@ -21,7 +21,6 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [gastos, setGastos] = useState([]);
 
-  // Estados para categorías
   const [categorias, setCategorias] = useState([]);
   const [categoriaSeleccionada, setCategoriaSeleccionada] = useState(null);
 
@@ -49,7 +48,6 @@ export default function Home() {
 
   async function fetchGastos() {
     try {
-      // Traemos el gasto junto con el nombre de su categoría asociada
       const { data, error } = await supabase
         .from("transactions")
         .select("*, categories(name)")
@@ -132,10 +130,49 @@ export default function Home() {
     router.replace("/");
   }
 
-  const totalGastado = gastos.reduce(
+  // --- NUEVA LÓGICA DE FILTRO MENSUAL --- //
+
+  // 1. Obtenemos la fecha de hoy
+  const fechaActual = new Date();
+
+  // 2. Sacamos el mes (le sumamos 1 porque enero es 0) y el año. Lo pasamos a texto ('09', '2026').
+  const mesActualStr = String(fechaActual.getMonth() + 1).padStart(2, "0");
+  const anioActualStr = String(fechaActual.getFullYear());
+
+  // 3. Array para traducir el número de mes a una palabra linda para el título
+  const nombresMeses = [
+    "Enero",
+    "Febrero",
+    "Marzo",
+    "Abril",
+    "Mayo",
+    "Junio",
+    "Julio",
+    "Agosto",
+    "Septiembre",
+    "Octubre",
+    "Noviembre",
+    "Diciembre",
+  ];
+  const nombreMes = nombresMeses[fechaActual.getMonth()];
+
+  // 4. Filtramos: Nos quedamos SOLO con los gastos de este mes y este año
+  const gastosDelMes = gastos.filter((gasto) => {
+    if (!gasto.date) return false;
+    // gasto.date es "2026-09-25". Cortamos el texto para sacar el año y el mes.
+    const anioGasto = gasto.date.substring(0, 4);
+    const mesGasto = gasto.date.substring(5, 7);
+
+    return anioGasto === anioActualStr && mesGasto === mesActualStr;
+  });
+
+  // 5. Sumamos únicamente los gastos filtrados
+  const totalGastado = gastosDelMes.reduce(
     (acumulador, gasto) => acumulador + gasto.amount,
     0,
   );
+
+  // -------------------------------------- //
 
   const renderGasto = ({ item }) => (
     <View style={styles.gastoItem}>
@@ -168,8 +205,9 @@ export default function Home() {
     <View style={styles.container}>
       <Text style={styles.title}>Panel General</Text>
 
+      {/* Tarjeta actualizada dinámicamente */}
       <View style={styles.totalCard}>
-        <Text style={styles.totalLabel}>Total Gastado</Text>
+        <Text style={styles.totalLabel}>Total de {nombreMes}</Text>
         <Text style={styles.totalAmount}>${totalGastado.toFixed(2)}</Text>
       </View>
 
@@ -193,7 +231,6 @@ export default function Home() {
           onChangeText={setDescripcion}
         />
 
-        {/* Selector de Categorías Horizontal */}
         <Text style={styles.labelCategoria}>Categoría:</Text>
         <ScrollView
           horizontal
@@ -229,7 +266,8 @@ export default function Home() {
       </View>
 
       <View style={styles.listContainer}>
-        <Text style={styles.listTitle}>Últimos Movimientos</Text>
+        {/* Agregamos una pista visual de que la lista muestra el historial */}
+        <Text style={styles.listTitle}>Historial de Movimientos</Text>
         <FlatList
           data={gastos}
           keyExtractor={(item) => item.id.toString()}
@@ -248,6 +286,7 @@ export default function Home() {
   );
 }
 
+// Estilos idénticos al paso anterior
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -279,6 +318,7 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: "600",
     marginBottom: 5,
+    textTransform: "capitalize",
   },
   totalAmount: { color: "white", fontSize: 36, fontWeight: "bold" },
   card: {

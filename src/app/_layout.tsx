@@ -4,7 +4,8 @@ export default function Layout() {
   return (
     <Stack screenOptions={{ headerShown: false }}>
       <Stack.Screen name="index" />
-      <Stack.Screen name="home" />
+      {/* Redirigimos a la carpeta (tabs) en lugar de un archivo específico */}
+      <Stack.Screen name="(tabs)" />
     </Stack>
   );
 }
