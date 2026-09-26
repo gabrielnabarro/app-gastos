@@ -1,9 +1,11 @@
+import DateTimePicker from "@react-native-community/datetimepicker";
 import { useRouter } from "expo-router";
 import { useEffect, useState } from "react";
 import {
   Alert,
   Button,
   FlatList,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -12,6 +14,13 @@ import {
   View,
 } from "react-native";
 import { supabase } from "../../../supabase";
+
+const formatearMoneda = (valor) => {
+  if (valor === undefined || valor === null) return "0,00";
+  let partes = valor.toFixed(2).split(".");
+  partes[0] = partes[0].replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+  return partes.join(",");
+};
 
 export default function Home() {
   const router = useRouter();
@@ -24,6 +33,9 @@ export default function Home() {
   const [categorias, setCategorias] = useState([]);
   const [categoriaSeleccionada, setCategoriaSeleccionada] = useState(null);
 
+  const [fechaGasto, setFechaGasto] = useState(new Date());
+  const [showDatePicker, setShowDatePicker] = useState(false);
+
   useEffect(() => {
     fetchCategorias();
     fetchGastos();
@@ -35,12 +47,9 @@ export default function Home() {
         .from("categories")
         .select("*")
         .order("name", { ascending: true });
-
       if (error) throw error;
       setCategorias(data || []);
-      if (data && data.length > 0) {
-        setCategoriaSeleccionada(data[0].id);
-      }
+      if (data && data.length > 0) setCategoriaSeleccionada(data[0].id);
     } catch (error) {
       console.error("Error al cargar categorías:", error.message);
     }
@@ -53,13 +62,23 @@ export default function Home() {
         .select("*, categories(name)")
         .order("date", { ascending: false })
         .order("created_at", { ascending: false });
-
       if (error) throw error;
       setGastos(data || []);
     } catch (error) {
       console.error("Error al cargar los gastos:", error.message);
     }
   }
+
+  const onDateChange = (event, selectedDate) => {
+    const currentDate = selectedDate || fechaGasto;
+    setShowDatePicker(Platform.OS === "ios");
+    if (event.type === "set" || Platform.OS === "ios") {
+      setShowDatePicker(false);
+      setFechaGasto(currentDate);
+    } else {
+      setShowDatePicker(false);
+    }
+  };
 
   async function guardarGasto() {
     if (!monto || !descripcion) {
@@ -69,27 +88,25 @@ export default function Home() {
       );
       return;
     }
-
     setLoading(true);
     try {
       const {
         data: { user },
       } = await supabase.auth.getUser();
-
       const { error } = await supabase.from("transactions").insert([
         {
-          amount: parseFloat(monto),
+          amount: parseFloat(monto.replace(",", ".")),
           description: descripcion,
           user_id: user.id,
           category_id: categoriaSeleccionada,
-          date: new Date().toISOString().split("T")[0],
+          date: fechaGasto.toISOString().split("T")[0],
         },
       ]);
-
       if (error) throw error;
 
       setMonto("");
       setDescripcion("");
+      setFechaGasto(new Date());
       fetchGastos();
     } catch (error) {
       Alert.alert("Error al guardar", error.message);
@@ -113,7 +130,6 @@ export default function Home() {
                 .from("transactions")
                 .delete()
                 .eq("id", id);
-
               if (error) throw error;
               fetchGastos();
             } catch (error) {
@@ -126,20 +142,15 @@ export default function Home() {
   }
 
   async function signOut() {
-    await supabase.auth.signOut();
-    router.replace("/");
+    try {
+      await supabase.auth.signOut();
+    } catch (error) {
+      console.log("Error al cerrar sesión:", error);
+    }
   }
-
-  // --- NUEVA LÓGICA DE FILTRO MENSUAL --- //
-
-  // 1. Obtenemos la fecha de hoy
   const fechaActual = new Date();
-
-  // 2. Sacamos el mes (le sumamos 1 porque enero es 0) y el año. Lo pasamos a texto ('09', '2026').
   const mesActualStr = String(fechaActual.getMonth() + 1).padStart(2, "0");
   const anioActualStr = String(fechaActual.getFullYear());
-
-  // 3. Array para traducir el número de mes a una palabra linda para el título
   const nombresMeses = [
     "Enero",
     "Febrero",
@@ -156,30 +167,28 @@ export default function Home() {
   ];
   const nombreMes = nombresMeses[fechaActual.getMonth()];
 
-  // 4. Filtramos: Nos quedamos SOLO con los gastos de este mes y este año
   const gastosDelMes = gastos.filter((gasto) => {
     if (!gasto.date) return false;
-    // gasto.date es "2026-09-25". Cortamos el texto para sacar el año y el mes.
-    const anioGasto = gasto.date.substring(0, 4);
-    const mesGasto = gasto.date.substring(5, 7);
-
-    return anioGasto === anioActualStr && mesGasto === mesActualStr;
+    return (
+      gasto.date.substring(0, 4) === anioActualStr &&
+      gasto.date.substring(5, 7) === mesActualStr
+    );
   });
 
-  // 5. Sumamos únicamente los gastos filtrados
   const totalGastado = gastosDelMes.reduce(
     (acumulador, gasto) => acumulador + gasto.amount,
     0,
   );
-
-  // -------------------------------------- //
 
   const renderGasto = ({ item }) => (
     <View style={styles.gastoItem}>
       <View style={styles.gastoInfo}>
         <Text style={styles.gastoDescripcion}>{item.description}</Text>
         <View style={styles.metaRow}>
-          <Text style={styles.gastoFecha}>{item.date}</Text>
+          <Text style={styles.gastoFecha}>
+            {item.date.substring(8, 10)}/{item.date.substring(5, 7)}/
+            {item.date.substring(0, 4)}
+          </Text>
           {item.categories?.name && (
             <View style={styles.categoriaTag}>
               <Text style={styles.categoriaTagText}>
@@ -190,7 +199,7 @@ export default function Home() {
         </View>
       </View>
       <View style={styles.gastoAcciones}>
-        <Text style={styles.gastoMonto}>${item.amount}</Text>
+        <Text style={styles.gastoMonto}>${formatearMoneda(item.amount)}</Text>
         <TouchableOpacity
           style={styles.deleteButton}
           onPress={() => eliminarGasto(item.id)}
@@ -205,10 +214,9 @@ export default function Home() {
     <View style={styles.container}>
       <Text style={styles.title}>Panel General</Text>
 
-      {/* Tarjeta actualizada dinámicamente */}
       <View style={styles.totalCard}>
         <Text style={styles.totalLabel}>Total de {nombreMes}</Text>
-        <Text style={styles.totalAmount}>${totalGastado.toFixed(2)}</Text>
+        <Text style={styles.totalAmount}>${formatearMoneda(totalGastado)}</Text>
       </View>
 
       <View style={styles.card}>
@@ -222,7 +230,6 @@ export default function Home() {
           value={monto}
           onChangeText={setMonto}
         />
-
         <TextInput
           style={styles.input}
           placeholder="Descripción (ej. Supermercado)"
@@ -230,6 +237,28 @@ export default function Home() {
           value={descripcion}
           onChangeText={setDescripcion}
         />
+
+        <View style={styles.rowPicker}>
+          <Text style={styles.labelFila}>Fecha:</Text>
+          <TouchableOpacity
+            style={styles.dateButton}
+            onPress={() => setShowDatePicker(true)}
+          >
+            <Text style={styles.dateButtonText}>
+              {fechaGasto.toLocaleDateString("es-AR")}
+            </Text>
+          </TouchableOpacity>
+        </View>
+
+        {showDatePicker && (
+          <DateTimePicker
+            value={fechaGasto}
+            mode="date"
+            display="default"
+            onValueChange={onDateChange}
+            maximumDate={new Date()}
+          />
+        )}
 
         <Text style={styles.labelCategoria}>Categoría:</Text>
         <ScrollView
@@ -266,13 +295,15 @@ export default function Home() {
       </View>
 
       <View style={styles.listContainer}>
-        {/* Agregamos una pista visual de que la lista muestra el historial */}
         <Text style={styles.listTitle}>Historial de Movimientos</Text>
         <FlatList
           data={gastos}
           keyExtractor={(item) => item.id.toString()}
           renderItem={renderGasto}
           showsVerticalScrollIndicator={false}
+          initialNumToRender={8}
+          maxToRenderPerBatch={10}
+          windowSize={5}
           ListEmptyComponent={
             <Text style={styles.emptyText}>No hay gastos registrados aún.</Text>
           }
@@ -286,7 +317,6 @@ export default function Home() {
   );
 }
 
-// Estilos idénticos al paso anterior
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -307,11 +337,6 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     alignItems: "center",
     marginBottom: 20,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.2,
-    shadowRadius: 5,
-    elevation: 5,
   },
   totalLabel: {
     color: "rgba(255, 255, 255, 0.8)",
@@ -326,11 +351,6 @@ const styles = StyleSheet.create({
     padding: 20,
     borderRadius: 10,
     marginBottom: 20,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
   },
   cardTitle: {
     fontSize: 18,
@@ -348,7 +368,22 @@ const styles = StyleSheet.create({
     fontSize: 16,
     marginBottom: 12,
   },
-
+  rowPicker: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 15,
+    justifyContent: "space-between",
+  },
+  labelFila: { fontSize: 14, fontWeight: "600", color: "#555" },
+  dateButton: {
+    backgroundColor: "#f0f0f0",
+    paddingHorizontal: 15,
+    paddingVertical: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#ddd",
+  },
+  dateButtonText: { fontSize: 15, color: "#333", fontWeight: "500" },
   labelCategoria: {
     fontSize: 14,
     fontWeight: "600",
@@ -366,7 +401,6 @@ const styles = StyleSheet.create({
   chipSelected: { backgroundColor: "#007bff" },
   chipText: { fontSize: 13, color: "#444", fontWeight: "500" },
   chipTextSelected: { color: "#fff", fontWeight: "bold" },
-
   listContainer: { flex: 1, marginBottom: 20 },
   listTitle: {
     fontSize: 18,
@@ -374,7 +408,6 @@ const styles = StyleSheet.create({
     marginBottom: 10,
     color: "#333",
   },
-
   gastoItem: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -397,7 +430,6 @@ const styles = StyleSheet.create({
     borderRadius: 10,
   },
   categoriaTagText: { fontSize: 11, color: "#007bff", fontWeight: "600" },
-
   gastoAcciones: { flexDirection: "row", alignItems: "center" },
   gastoMonto: {
     fontSize: 18,
@@ -414,7 +446,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   deleteButtonText: { color: "white", fontWeight: "bold", fontSize: 13 },
-
   emptyText: {
     textAlign: "center",
     color: "#888",
