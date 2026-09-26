@@ -1,142 +1,85 @@
-import { useRouter } from "expo-router";
-import { useEffect, useState } from "react";
+// Ejemplo de lógica recomendada para tu src/app/login.tsx
+import { router } from "expo-router";
+import { useState } from "react";
 import {
-  ActivityIndicator,
   Alert,
-  Button,
+  SafeAreaView,
   StyleSheet,
   Text,
   TextInput,
+  TouchableOpacity,
   View,
 } from "react-native";
 import { supabase } from "../../supabase";
 
-export default function Login() {
+export default function LoginScreen() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [cargandoSesion, setCargandoSesion] = useState(true);
 
-  const router = useRouter();
-
-  useEffect(() => {
-    // NUEVO: Escuchamos los cambios de estado directamente desde Supabase
-    const { data: authListener } = supabase.auth.onAuthStateChange(
-      (event, session) => {
-        if (session) {
-          // Si hay una sesión confirmada, entramos a la app
-          router.replace("/(tabs)");
-        } else {
-          // Si la sesión se cierra o no existe, mostramos el formulario
-          setCargandoSesion(false);
-        }
-      },
-    );
-
-    // Limpiamos el listener cuando el componente se desmonta
-    return () => {
-      authListener.subscription.unsubscribe();
-    };
-  }, []);
-
-  async function handleLogin() {
-    setLoading(true);
+  const handleLogin = async () => {
     const { error } = await supabase.auth.signInWithPassword({
       email,
       password,
     });
     if (error) {
-      Alert.alert("Error", error.message);
-      setLoading(false);
-    }
-    router.replace("/(tabs)/gastos");
-  }
-
-  async function handleSignUp() {
-    setLoading(true);
-    const { error } = await supabase.auth.signUp({ email, password });
-    if (error) {
-      Alert.alert("Error", error.message);
+      Alert.alert("Error de acceso", error.message);
     } else {
-      Alert.alert(
-        "Revisá tu email",
-        "Te mandamos un link para confirmar tu cuenta.",
-      );
+      router.replace("/(tabs)/gastos");
     }
-    setLoading(false);
-  }
-
-  if (cargandoSesion) {
-    return (
-      <View style={[styles.container, { justifyContent: "center" }]}>
-        <ActivityIndicator size="large" color="#007bff" />
-      </View>
-    );
-  }
+  };
 
   return (
-    <View style={styles.container}>
-      <Text style={styles.title}>Mi App de Gastos</Text>
-
-      <TextInput
-        style={styles.input}
-        placeholder="Email"
-        placeholderTextColor="#888"
-        value={email}
-        onChangeText={setEmail}
-        autoCapitalize="none"
-        keyboardType="email-address"
-      />
-      <TextInput
-        style={styles.input}
-        placeholder="Contraseña"
-        placeholderTextColor="#888"
-        value={password}
-        onChangeText={setPassword}
-        secureTextEntry
-      />
-
-      <View style={styles.buttonContainer}>
-        <Button
-          title={loading ? "Cargando..." : "Iniciar Sesión"}
-          onPress={handleLogin}
-          disabled={loading}
+    <SafeAreaView style={styles.container}>
+      <View style={styles.formContainer}>
+        <Text style={styles.title}>Iniciar Sesión</Text>
+        <TextInput
+          style={styles.input}
+          placeholder="Correo electrónico"
+          placeholderTextColor="#94A3B8"
+          autoCapitalize="none"
+          value={email}
+          onChangeText={setEmail}
         />
-      </View>
-      <View style={styles.buttonContainer}>
-        <Button
-          title={loading ? "Cargando..." : "Crear Cuenta"}
-          onPress={handleSignUp}
-          disabled={loading}
-          color="#34c759"
+        <TextInput
+          style={styles.input}
+          placeholder="Contraseña"
+          placeholderTextColor="#94A3B8"
+          secureTextEntry
+          value={password}
+          onChangeText={setPassword}
         />
+        <TouchableOpacity style={styles.button} onPress={handleLogin}>
+          <Text style={styles.buttonText}>Entrar</Text>
+        </TouchableOpacity>
       </View>
-    </View>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    justifyContent: "center",
-    padding: 20,
-    backgroundColor: "#f5f5f5",
-  },
+  container: { flex: 1, backgroundColor: "#0F172A", justifyContent: "center" },
+  formContainer: { padding: 24 },
   title: {
-    fontSize: 28,
+    fontSize: 32,
     fontWeight: "bold",
-    marginBottom: 30,
+    color: "#F8FAFC",
+    marginBottom: 32,
     textAlign: "center",
-    color: "#333",
   },
   input: {
-    backgroundColor: "white",
-    padding: 15,
-    borderRadius: 8,
-    marginBottom: 15,
-    borderWidth: 1,
-    borderColor: "#ddd",
+    backgroundColor: "#1E293B",
+    color: "#F8FAFC",
+    padding: 16,
+    borderRadius: 16,
+    marginBottom: 16,
     fontSize: 16,
   },
-  buttonContainer: { marginBottom: 10 },
+  button: {
+    backgroundColor: "#3B82F6",
+    padding: 16,
+    borderRadius: 16,
+    alignItems: "center",
+    marginTop: 8,
+  },
+  buttonText: { color: "#FFF", fontSize: 16, fontWeight: "bold" },
 });

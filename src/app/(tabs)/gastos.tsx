@@ -1,456 +1,462 @@
-import DateTimePicker from "@react-native-community/datetimepicker";
-import { useRouter } from "expo-router";
+// src/app/(tabs)/gastos.tsx
 import { useEffect, useState } from "react";
 import {
+  ActivityIndicator,
   Alert,
-  Button,
   FlatList,
+  Keyboard,
+  KeyboardAvoidingView,
+  Modal,
   Platform,
-  ScrollView,
+  SafeAreaView,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
+  TouchableWithoutFeedback,
   View,
 } from "react-native";
+import { PieChart } from "react-native-gifted-charts";
 import { supabase } from "../../../supabase";
 
-const formatearMoneda = (valor) => {
-  if (valor === undefined || valor === null) return "0,00";
-  let partes = valor.toFixed(2).split(".");
-  partes[0] = partes[0].replace(/\B(?=(\d{3})+(?!\d))/g, ".");
-  return partes.join(",");
-};
+interface Category {
+  id: string;
+  name: string;
+  icon: string | null;
+}
 
-export default function Home() {
-  const router = useRouter();
+interface Transaction {
+  id: string;
+  description: string;
+  amount: number;
+  date: string;
+  category_id: string;
+  payment_method_id: string | null; // Ahora es opcional
+  categories: { name: string; icon: string };
+}
 
-  const [monto, setMonto] = useState("");
-  const [descripcion, setDescripcion] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [gastos, setGastos] = useState([]);
+const COLORS = [
+  "#10B981",
+  "#3B82F6",
+  "#F59E0B",
+  "#8B5CF6",
+  "#EC4899",
+  "#14B8A6",
+  "#F43F5E",
+];
 
-  const [categorias, setCategorias] = useState([]);
-  const [categoriaSeleccionada, setCategoriaSeleccionada] = useState(null);
+export default function GastosScreen() {
+  const [listaGastos, setListaGastos] = useState<Transaction[]>([]);
+  const [categorias, setCategorias] = useState<Category[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [modalVisible, setModalVisible] = useState(false);
 
-  const [fechaGasto, setFechaGasto] = useState(new Date());
-  const [showDatePicker, setShowDatePicker] = useState(false);
+  // Estados del formulario
+  const [description, setDescription] = useState("");
+  const [amount, setAmount] = useState("");
+  const [selectedCategoryId, setSelectedCategoryId] = useState("");
 
   useEffect(() => {
-    fetchCategorias();
-    fetchGastos();
+    cargarDatosIniciales();
   }, []);
 
-  async function fetchCategorias() {
-    try {
-      const { data, error } = await supabase
-        .from("categories")
-        .select("*")
-        .order("name", { ascending: true });
-      if (error) throw error;
-      setCategorias(data || []);
-      if (data && data.length > 0) setCategoriaSeleccionada(data[0].id);
-    } catch (error) {
-      console.error("Error al cargar categorías:", error.message);
-    }
-  }
-
-  async function fetchGastos() {
-    try {
-      const { data, error } = await supabase
-        .from("transactions")
-        .select("*, categories(name)")
-        .order("date", { ascending: false })
-        .order("created_at", { ascending: false });
-      if (error) throw error;
-      setGastos(data || []);
-    } catch (error) {
-      console.error("Error al cargar los gastos:", error.message);
-    }
-  }
-
-  const onDateChange = (event, selectedDate) => {
-    const currentDate = selectedDate || fechaGasto;
-    setShowDatePicker(Platform.OS === "ios");
-    if (event.type === "set" || Platform.OS === "ios") {
-      setShowDatePicker(false);
-      setFechaGasto(currentDate);
-    } else {
-      setShowDatePicker(false);
-    }
-  };
-
-  async function guardarGasto() {
-    if (!monto || !descripcion) {
-      Alert.alert(
-        "Faltan datos",
-        "Por favor ingresá un monto y una descripción.",
-      );
-      return;
-    }
-    setLoading(true);
+  const cargarDatosIniciales = async () => {
     try {
       const {
         data: { user },
       } = await supabase.auth.getUser();
-      const { error } = await supabase.from("transactions").insert([
-        {
-          amount: parseFloat(monto.replace(",", ".")),
-          description: descripcion,
-          user_id: user.id,
-          category_id: categoriaSeleccionada,
-          date: fechaGasto.toISOString().split("T")[0],
-        },
-      ]);
-      if (error) throw error;
+      if (!user) return;
 
-      setMonto("");
-      setDescripcion("");
-      setFechaGasto(new Date());
-      fetchGastos();
-    } catch (error) {
-      Alert.alert("Error al guardar", error.message);
+      // Eliminamos la consulta de métodos de pago para optimizar rendimiento
+      const [transaccionesRes, categoriasRes] = await Promise.all([
+        supabase
+          .from("transactions")
+          .select("*, categories(name, icon)")
+          .eq("user_id", user.id)
+          .order("date", { ascending: false }),
+        supabase.from("categories").select("*").eq("user_id", user.id),
+      ]);
+
+      if (transaccionesRes.error) throw transaccionesRes.error;
+      if (categoriasRes.error) throw categoriasRes.error;
+
+      setListaGastos(transaccionesRes.data || []);
+      setCategorias(categoriasRes.data || []);
+
+      if (categoriasRes.data && categoriasRes.data.length > 0) {
+        setSelectedCategoryId(categoriasRes.data[0].id);
+      }
+    } catch (error: any) {
+      Alert.alert("Error cargando datos", error.message);
     } finally {
       setLoading(false);
     }
-  }
+  };
 
-  async function eliminarGasto(id) {
-    Alert.alert(
-      "Eliminar Gasto",
-      "¿Estás seguro de que querés borrar este gasto?",
-      [
-        { text: "Cancelar", style: "cancel" },
-        {
-          text: "Eliminar",
-          style: "destructive",
-          onPress: async () => {
-            try {
-              const { error } = await supabase
-                .from("transactions")
-                .delete()
-                .eq("id", id);
-              if (error) throw error;
-              fetchGastos();
-            } catch (error) {
-              Alert.alert("Error al eliminar", error.message);
-            }
-          },
-        },
-      ],
-    );
-  }
-
-  async function signOut() {
-    try {
-      await supabase.auth.signOut();
-    } catch (error) {
-      console.log("Error al cerrar sesión:", error);
+  const agregarGasto = async () => {
+    if (!description || !amount || !selectedCategoryId) {
+      Alert.alert(
+        "Datos incompletos",
+        "Por favor completa la descripción, monto y categoría.",
+      );
+      return;
     }
-  }
-  const fechaActual = new Date();
-  const mesActualStr = String(fechaActual.getMonth() + 1).padStart(2, "0");
-  const anioActualStr = String(fechaActual.getFullYear());
-  const nombresMeses = [
-    "Enero",
-    "Febrero",
-    "Marzo",
-    "Abril",
-    "Mayo",
-    "Junio",
-    "Julio",
-    "Agosto",
-    "Septiembre",
-    "Octubre",
-    "Noviembre",
-    "Diciembre",
-  ];
-  const nombreMes = nombresMeses[fechaActual.getMonth()];
 
-  const gastosDelMes = gastos.filter((gasto) => {
-    if (!gasto.date) return false;
-    return (
-      gasto.date.substring(0, 4) === anioActualStr &&
-      gasto.date.substring(5, 7) === mesActualStr
-    );
-  });
+    try {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) return;
 
-  const totalGastado = gastosDelMes.reduce(
-    (acumulador, gasto) => acumulador + gasto.amount,
+      const fechaActual = new Date().toISOString().split("T")[0];
+
+      const nuevaTransaccion = {
+        user_id: user.id,
+        description,
+        amount: parseFloat(amount),
+        date: fechaActual,
+        category_id: selectedCategoryId,
+        payment_method_id: null, // Enviamos nulo explícitamente para uso futuro
+      };
+
+      const { data, error } = await supabase
+        .from("transactions")
+        .insert([nuevaTransaccion])
+        .select("*, categories(name, icon)")
+        .single();
+
+      if (error) throw error;
+
+      setListaGastos([data, ...listaGastos]);
+      setDescription("");
+      setAmount("");
+      setModalVisible(false);
+      Keyboard.dismiss();
+    } catch (error: any) {
+      Alert.alert("Error al guardar", error.message);
+    }
+  };
+
+  const gastosAgrupados = listaGastos.reduce(
+    (acc, curr) => {
+      const catName = curr.categories?.name || "Sin Categoría";
+      acc[catName] = (acc[catName] || 0) + Number(curr.amount);
+      return acc;
+    },
+    {} as Record<string, number>,
+  );
+
+  const pieData =
+    Object.keys(gastosAgrupados).length > 0
+      ? Object.keys(gastosAgrupados).map((catName, index) => ({
+          value: gastosAgrupados[catName],
+          color: COLORS[index % COLORS.length],
+          focused: index === 0,
+        }))
+      : [{ value: 1, color: "#334155" }];
+
+  const totalMes = listaGastos.reduce(
+    (acc, curr) => acc + Number(curr.amount),
     0,
   );
 
-  const renderGasto = ({ item }) => (
-    <View style={styles.gastoItem}>
-      <View style={styles.gastoInfo}>
-        <Text style={styles.gastoDescripcion}>{item.description}</Text>
-        <View style={styles.metaRow}>
-          <Text style={styles.gastoFecha}>
-            {item.date.substring(8, 10)}/{item.date.substring(5, 7)}/
-            {item.date.substring(0, 4)}
-          </Text>
-          {item.categories?.name && (
-            <View style={styles.categoriaTag}>
-              <Text style={styles.categoriaTagText}>
-                {item.categories.name}
-              </Text>
-            </View>
-          )}
+  const renderItem = ({ item }: { item: Transaction }) => {
+    const catName = item.categories?.name || "Desconocido";
+    const catKeys = Object.keys(gastosAgrupados);
+    const colorIndex = catKeys.indexOf(catName);
+    const cardColor =
+      colorIndex !== -1 ? COLORS[colorIndex % COLORS.length] : "#EC4899";
+    const fechaFormat = new Date(item.date).toLocaleDateString("es-AR", {
+      day: "2-digit",
+      month: "short",
+    });
+
+    return (
+      <View style={styles.card}>
+        <View style={styles.cardLeft}>
+          <View
+            style={[styles.colorIndicator, { backgroundColor: cardColor }]}
+          />
+          <View>
+            <Text style={styles.cardTitle}>{item.description}</Text>
+            <Text style={styles.cardSubtitle}>
+              {item.categories?.icon ? `${item.categories.icon} ` : ""}
+              {catName} • {fechaFormat}
+            </Text>
+          </View>
         </View>
+        <Text style={styles.cardAmount}>
+          ${Number(item.amount).toLocaleString("es-AR")}
+        </Text>
       </View>
-      <View style={styles.gastoAcciones}>
-        <Text style={styles.gastoMonto}>${formatearMoneda(item.amount)}</Text>
-        <TouchableOpacity
-          style={styles.deleteButton}
-          onPress={() => eliminarGasto(item.id)}
-        >
-          <Text style={styles.deleteButtonText}>✕</Text>
-        </TouchableOpacity>
+    );
+  };
+
+  if (loading) {
+    return (
+      <View style={[styles.container, styles.centerAll]}>
+        <ActivityIndicator size="large" color="#3B82F6" />
       </View>
-    </View>
-  );
+    );
+  }
 
   return (
-    <View style={styles.container}>
-      <Text style={styles.title}>Panel General</Text>
+    <SafeAreaView style={styles.container}>
+      <FlatList
+        data={listaGastos}
+        keyExtractor={(item) => item.id}
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={styles.listPadding}
+        ListHeaderComponent={
+          <View style={styles.headerContainer}>
+            <Text style={styles.headerTitle}>Resumen del Mes</Text>
+            <View style={styles.chartContainer}>
+              <PieChart
+                data={pieData}
+                donut
+                showGradient
+                sectionAutoFocus
+                radius={90}
+                innerRadius={60}
+                innerCircleColor={"#1E293B"}
+                centerLabelComponent={() => (
+                  <View style={styles.centerLabel}>
+                    <Text style={styles.centerLabelValue}>
+                      ${totalMes.toLocaleString("es-AR")}
+                    </Text>
+                    <Text style={styles.centerLabelText}>Total</Text>
+                  </View>
+                )}
+              />
+            </View>
+            <Text style={styles.sectionTitle}>Transacciones Recientes</Text>
+          </View>
+        }
+        renderItem={renderItem}
+        ListEmptyComponent={
+          <Text style={styles.emptyText}>
+            No hay transacciones registradas.
+          </Text>
+        }
+      />
 
-      <View style={styles.totalCard}>
-        <Text style={styles.totalLabel}>Total de {nombreMes}</Text>
-        <Text style={styles.totalAmount}>${formatearMoneda(totalGastado)}</Text>
-      </View>
-
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Nuevo Gasto</Text>
-
-        <TextInput
-          style={styles.input}
-          placeholder="Monto (ej. 1500)"
-          placeholderTextColor="#888"
-          keyboardType="numeric"
-          value={monto}
-          onChangeText={setMonto}
-        />
-        <TextInput
-          style={styles.input}
-          placeholder="Descripción (ej. Supermercado)"
-          placeholderTextColor="#888"
-          value={descripcion}
-          onChangeText={setDescripcion}
-        />
-
-        <View style={styles.rowPicker}>
-          <Text style={styles.labelFila}>Fecha:</Text>
-          <TouchableOpacity
-            style={styles.dateButton}
-            onPress={() => setShowDatePicker(true)}
-          >
-            <Text style={styles.dateButtonText}>
-              {fechaGasto.toLocaleDateString("es-AR")}
-            </Text>
-          </TouchableOpacity>
-        </View>
-
-        {showDatePicker && (
-          <DateTimePicker
-            value={fechaGasto}
-            mode="date"
-            display="default"
-            onValueChange={onDateChange}
-            maximumDate={new Date()}
-          />
-        )}
-
-        <Text style={styles.labelCategoria}>Categoría:</Text>
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          style={styles.categoriesScroll}
-        >
-          {categorias.map((cat) => {
-            const isSelected = categoriaSeleccionada === cat.id;
-            return (
-              <TouchableOpacity
-                key={cat.id}
-                style={[styles.chip, isSelected && styles.chipSelected]}
-                onPress={() => setCategoriaSeleccionada(cat.id)}
-              >
-                <Text
-                  style={[
-                    styles.chipText,
-                    isSelected && styles.chipTextSelected,
-                  ]}
-                >
-                  {cat.name}
-                </Text>
-              </TouchableOpacity>
+      <TouchableOpacity
+        style={styles.fab}
+        onPress={() => {
+          if (categorias.length === 0) {
+            Alert.alert(
+              "Atención",
+              "Debes crear categorías en tu base de datos primero.",
             );
-          })}
-        </ScrollView>
-
-        <Button
-          title={loading ? "Guardando..." : "Guardar Gasto"}
-          onPress={guardarGasto}
-          disabled={loading}
-        />
-      </View>
-
-      <View style={styles.listContainer}>
-        <Text style={styles.listTitle}>Historial de Movimientos</Text>
-        <FlatList
-          data={gastos}
-          keyExtractor={(item) => item.id.toString()}
-          renderItem={renderGasto}
-          showsVerticalScrollIndicator={false}
-          initialNumToRender={8}
-          maxToRenderPerBatch={10}
-          windowSize={5}
-          ListEmptyComponent={
-            <Text style={styles.emptyText}>No hay gastos registrados aún.</Text>
+            return;
           }
-        />
-      </View>
+          setModalVisible(true);
+        }}
+      >
+        <Text style={styles.fabIcon}>+</Text>
+      </TouchableOpacity>
 
-      <View style={styles.buttonContainer}>
-        <Button title="Cerrar Sesión" onPress={signOut} color="#ff3b30" />
-      </View>
-    </View>
+      <Modal visible={modalVisible} animationType="slide" transparent>
+        <TouchableWithoutFeedback onPress={() => Keyboard.dismiss()}>
+          <View style={styles.modalOverlay}>
+            <KeyboardAvoidingView
+              behavior={Platform.OS === "ios" ? "padding" : "height"}
+              style={styles.keyboardAvoiding}
+            >
+              <View style={styles.modalContent}>
+                <Text style={styles.modalTitle}>Nuevo Gasto</Text>
+
+                <TextInput
+                  style={styles.input}
+                  placeholder="Descripción (ej. Supermercado)"
+                  placeholderTextColor="#94A3B8"
+                  value={description}
+                  onChangeText={setDescription}
+                />
+                <TextInput
+                  style={styles.input}
+                  placeholder="Monto (ej. 15000)"
+                  placeholderTextColor="#94A3B8"
+                  keyboardType="numeric"
+                  value={amount}
+                  onChangeText={setAmount}
+                />
+
+                <Text style={styles.labelCategoria}>Categoría:</Text>
+                <View style={styles.categoriasContainer}>
+                  {categorias.map((cat) => (
+                    <TouchableOpacity
+                      key={cat.id}
+                      style={[
+                        styles.chip,
+                        selectedCategoryId === cat.id && styles.chipActive,
+                      ]}
+                      onPress={() => {
+                        setSelectedCategoryId(cat.id);
+                        Keyboard.dismiss();
+                      }}
+                    >
+                      <Text
+                        style={[
+                          styles.chipText,
+                          selectedCategoryId === cat.id &&
+                            styles.chipTextActive,
+                        ]}
+                      >
+                        {cat.icon ? `${cat.icon} ` : ""}
+                        {cat.name}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+
+                <View style={styles.modalButtons}>
+                  <TouchableOpacity
+                    style={[styles.btn, styles.btnCancel]}
+                    onPress={() => setModalVisible(false)}
+                  >
+                    <Text style={styles.btnTextCancel}>Cancelar</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.btn, styles.btnSave]}
+                    onPress={agregarGasto}
+                  >
+                    <Text style={styles.btnTextSave}>Guardar</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </KeyboardAvoidingView>
+          </View>
+        </TouchableWithoutFeedback>
+      </Modal>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    padding: 20,
-    backgroundColor: "#f5f5f5",
-    paddingTop: 50,
-  },
-  title: {
+  container: { flex: 1, backgroundColor: "#0F172A" },
+  centerAll: { justifyContent: "center", alignItems: "center" },
+  listPadding: { padding: 20, paddingBottom: 40 },
+  headerContainer: { marginBottom: 20 },
+  headerTitle: {
     fontSize: 28,
     fontWeight: "bold",
-    marginBottom: 15,
-    textAlign: "center",
-    color: "#333",
+    color: "#F8FAFC",
+    marginBottom: 20,
   },
-  totalCard: {
-    backgroundColor: "#007bff",
-    padding: 20,
-    borderRadius: 12,
+  chartContainer: {
+    backgroundColor: "#1E293B",
+    borderRadius: 24,
+    padding: 24,
     alignItems: "center",
-    marginBottom: 20,
+    justifyContent: "center",
+    marginBottom: 32,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.3,
+    shadowRadius: 15,
+    elevation: 8,
   },
-  totalLabel: {
-    color: "rgba(255, 255, 255, 0.8)",
-    fontSize: 16,
+  centerLabel: { justifyContent: "center", alignItems: "center" },
+  centerLabelValue: { fontSize: 22, fontWeight: "bold", color: "#F8FAFC" },
+  centerLabelText: { fontSize: 14, color: "#94A3B8" },
+  sectionTitle: {
+    fontSize: 20,
     fontWeight: "600",
-    marginBottom: 5,
-    textTransform: "capitalize",
+    color: "#F8FAFC",
+    marginBottom: 16,
   },
-  totalAmount: { color: "white", fontSize: 36, fontWeight: "bold" },
+  emptyText: { color: "#94A3B8", textAlign: "center", marginTop: 20 },
   card: {
-    backgroundColor: "white",
-    padding: 20,
-    borderRadius: 10,
-    marginBottom: 20,
-  },
-  cardTitle: {
-    fontSize: 18,
-    fontWeight: "600",
-    marginBottom: 15,
-    color: "#333",
-  },
-  input: {
-    backgroundColor: "#f9f9f9",
-    paddingHorizontal: 15,
-    paddingVertical: 10,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: "#ddd",
-    fontSize: 16,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: "#1E293B",
+    padding: 16,
+    borderRadius: 16,
     marginBottom: 12,
   },
-  rowPicker: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginBottom: 15,
-    justifyContent: "space-between",
-  },
-  labelFila: { fontSize: 14, fontWeight: "600", color: "#555" },
-  dateButton: {
-    backgroundColor: "#f0f0f0",
-    paddingHorizontal: 15,
-    paddingVertical: 8,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: "#ddd",
-  },
-  dateButtonText: { fontSize: 15, color: "#333", fontWeight: "500" },
-  labelCategoria: {
-    fontSize: 14,
+  cardLeft: { flexDirection: "row", alignItems: "center" },
+  colorIndicator: { width: 12, height: 12, borderRadius: 6, marginRight: 16 },
+  cardTitle: {
+    fontSize: 16,
     fontWeight: "600",
-    color: "#555",
-    marginBottom: 8,
+    color: "#F8FAFC",
+    marginBottom: 4,
   },
-  categoriesScroll: { flexDirection: "row", marginBottom: 15 },
-  chip: {
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 20,
-    backgroundColor: "#ececec",
-    marginRight: 8,
-  },
-  chipSelected: { backgroundColor: "#007bff" },
-  chipText: { fontSize: 13, color: "#444", fontWeight: "500" },
-  chipTextSelected: { color: "#fff", fontWeight: "bold" },
-  listContainer: { flex: 1, marginBottom: 20 },
-  listTitle: {
-    fontSize: 18,
-    fontWeight: "600",
-    marginBottom: 10,
-    color: "#333",
-  },
-  gastoItem: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    backgroundColor: "white",
-    padding: 15,
-    borderRadius: 8,
-    marginBottom: 10,
-    borderLeftWidth: 4,
-    borderLeftColor: "#007bff",
-  },
-  gastoInfo: { flex: 1 },
-  gastoDescripcion: { fontSize: 16, fontWeight: "bold", color: "#333" },
-  metaRow: { flexDirection: "row", alignItems: "center", marginTop: 4 },
-  gastoFecha: { fontSize: 12, color: "#888", marginRight: 8 },
-  categoriaTag: {
-    backgroundColor: "#eef4ff",
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 10,
-  },
-  categoriaTagText: { fontSize: 11, color: "#007bff", fontWeight: "600" },
-  gastoAcciones: { flexDirection: "row", alignItems: "center" },
-  gastoMonto: {
-    fontSize: 18,
-    fontWeight: "bold",
-    color: "#ff3b30",
-    marginRight: 15,
-  },
-  deleteButton: {
-    backgroundColor: "#ff3b30",
-    width: 28,
-    height: 28,
-    borderRadius: 14,
+  cardSubtitle: { fontSize: 13, color: "#94A3B8" },
+  cardAmount: { fontSize: 16, fontWeight: "bold", color: "#EF4444" },
+  fab: {
+    position: "absolute",
+    bottom: 24,
+    right: 24,
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: "#3B82F6",
     justifyContent: "center",
     alignItems: "center",
+    elevation: 5,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
   },
-  deleteButtonText: { color: "white", fontWeight: "bold", fontSize: 13 },
-  emptyText: {
-    textAlign: "center",
-    color: "#888",
-    marginTop: 20,
-    fontStyle: "italic",
+  fabIcon: { fontSize: 32, color: "#FFF", lineHeight: 36 },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.7)",
+    justifyContent: "center",
+    padding: 20,
   },
-  buttonContainer: { width: "100%", paddingBottom: 10 },
+  keyboardAvoiding: { width: "100%", alignItems: "center" },
+  modalContent: {
+    backgroundColor: "#1E293B",
+    width: "100%",
+    borderRadius: 24,
+    padding: 24,
+  },
+  modalTitle: {
+    fontSize: 22,
+    fontWeight: "bold",
+    color: "#F8FAFC",
+    marginBottom: 20,
+  },
+  input: {
+    backgroundColor: "#0F172A",
+    color: "#F8FAFC",
+    padding: 16,
+    borderRadius: 12,
+    marginBottom: 16,
+    fontSize: 16,
+  },
+  labelCategoria: {
+    color: "#94A3B8",
+    fontSize: 14,
+    marginBottom: 8,
+    marginTop: 4,
+  },
+  categoriasContainer: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginBottom: 20,
+  },
+  chip: {
+    backgroundColor: "#0F172A",
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: "#334155",
+  },
+  chipActive: { backgroundColor: "#3B82F6", borderColor: "#3B82F6" },
+  chipText: { color: "#94A3B8", fontSize: 14, fontWeight: "500" },
+  chipTextActive: { color: "#FFF", fontWeight: "bold" },
+  modalButtons: { flexDirection: "row", gap: 12, marginTop: 8 },
+  btn: { flex: 1, padding: 16, borderRadius: 12, alignItems: "center" },
+  btnCancel: { backgroundColor: "#334155" },
+  btnSave: { backgroundColor: "#3B82F6" },
+  btnTextCancel: { color: "#F8FAFC", fontWeight: "600" },
+  btnTextSave: { color: "#FFF", fontWeight: "bold" },
 });

@@ -1,64 +1,26 @@
-import { Session } from "@supabase/supabase-js";
-import { Redirect, Stack, useSegments } from "expo-router";
-import { useEffect, useState } from "react";
-import { ActivityIndicator, View } from "react-native";
-import { supabase } from "../../supabase";
+// src/app/_layout.tsx
+import { Stack } from "expo-router";
+import { StatusBar } from "expo-status-bar";
 
 export default function RootLayout() {
-  const [session, setSession] = useState<Session | null>(null);
-  const [initialized, setInitialized] = useState(false);
-  const segments = useSegments();
+  return (
+    <>
+      {/* Forzamos la barra de estado en modo claro para que contraste con el fondo oscuro */}
+      <StatusBar style="light" />
 
-  useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-      setInitialized(true);
-    });
-
-    const { data: authListener } = supabase.auth.onAuthStateChange(
-      (_event, session) => {
-        setSession(session);
-      },
-    );
-
-    return () => authListener.subscription.unsubscribe();
-  }, []);
-
-  // Mientras carga la sesión inicial, mostramos un spinner
-  if (!initialized) {
-    return (
-      <View
-        style={{
-          flex: 1,
-          justifyContent: "center",
-          alignItems: "center",
-          backgroundColor: "#f5f5f5",
+      <Stack
+        screenOptions={{
+          headerShown: false,
+          // Inyectamos el color de fondo moderno (#0F172A) directamente al contenedor principal
+          contentStyle: { backgroundColor: "#0F172A" },
+          // Si en el futuro activas headers, heredarán este color
+          headerStyle: { backgroundColor: "#1E293B" },
+          headerTintColor: "#F8FAFC",
         }}
       >
-        <ActivityIndicator size="large" color="#007bff" />
-      </View>
-    );
-  }
-
-  // ¿En qué pantalla estamos?
-  const inAuthGroup = segments[0] === "login";
-
-  // 1. Si NO hay sesión y NO estamos en el login -> Mandar al login
-  if (!session && !inAuthGroup) {
-    return <Redirect href="/login" />;
-  }
-
-  // 2. Si HAY sesión y estamos en el login -> Mandar a las tabs (a la pantalla de gastos)
-  if (session && inAuthGroup) {
-    return <Redirect href="/(tabs)/gastos" />;
-  }
-
-  // Si estamos en la pantalla correcta, mostramos el Stack normal
-  return (
-    <Stack screenOptions={{ headerShown: false }}>
-      <Stack.Screen name="index" />
-      <Stack.Screen name="login" />
-      <Stack.Screen name="(tabs)" />
-    </Stack>
+        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+        {/* Aquí puedes agregar login u otras rutas en el futuro */}
+      </Stack>
+    </>
   );
 }
