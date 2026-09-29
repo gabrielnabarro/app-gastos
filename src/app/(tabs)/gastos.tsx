@@ -1,4 +1,6 @@
 // src/app/(tabs)/gastos.tsx
+import { Ionicons } from "@expo/vector-icons";
+import DateTimePicker from "@react-native-community/datetimepicker";
 import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
@@ -18,6 +20,9 @@ import {
 } from "react-native";
 import { PieChart } from "react-native-gifted-charts";
 import { supabase } from "../../../supabase";
+// NUEVAS IMPORTACIONES PARA AUDIO Y ARCHIVOS
+import { Audio } from "expo-av";
+import * as FileSystem from "expo-file-system";
 
 interface Category {
   id: string;
@@ -30,8 +35,9 @@ interface Transaction {
   description: string;
   amount: number;
   date: string;
+  created_at: string;
   category_id: string;
-  payment_method_id: string | null; // Ahora es opcional
+  payment_method_id: string | null;
   categories: { name: string; icon: string };
 }
 
@@ -44,17 +50,58 @@ const COLORS = [
   "#14B8A6",
   "#F43F5E",
 ];
+const NOMBRES_DIAS = [
+  "Domingo",
+  "Lunes",
+  "Martes",
+  "Miércoles",
+  "Jueves",
+  "Viernes",
+  "Sábado",
+];
+const NOMBRES_MESES = [
+  "ene",
+  "feb",
+  "mar",
+  "abr",
+  "may",
+  "jun",
+  "jul",
+  "ago",
+  "sep",
+  "oct",
+  "nov",
+  "dic",
+];
+
+// =========================
+// 🚨 API KEY GOOGLE AI STUDIO 🚨
+// =========================
+const GEMINI_API_KEY = "AQ.Ab8RN6Jl785DFkJ7qY_8vVaq_s5Fesny8D2S2ai09pzTI9zaog";
 
 export default function GastosScreen() {
   const [listaGastos, setListaGastos] = useState<Transaction[]>([]);
   const [categorias, setCategorias] = useState<Category[]>([]);
   const [loading, setLoading] = useState(true);
-  const [modalVisible, setModalVisible] = useState(false);
 
-  // Estados del formulario
+  const [modalNuevoVisible, setModalNuevoVisible] = useState(false);
+  const [modalDetalleVisible, setModalDetalleVisible] = useState(false);
+  const [modalEliminarVisible, setModalEliminarVisible] = useState(false);
+
+  const [gastoAEliminar, setGastoAEliminar] = useState<string | null>(null);
+  const [gastoSeleccionado, setGastoSeleccionado] =
+    useState<Transaction | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+
   const [description, setDescription] = useState("");
   const [amount, setAmount] = useState("");
   const [selectedCategoryId, setSelectedCategoryId] = useState("");
+  const [date, setDate] = useState(new Date());
+  const [showDatePicker, setShowDatePicker] = useState(false);
+
+  // NUEVOS ESTADOS PARA GRABACIÓN DE VOZ
+  const [recording, setRecording] = useState<Audio.Recording | undefined>();
+  const [isProcessingVoice, setIsProcessingVoice] = useState(false);
 
   useEffect(() => {
     cargarDatosIniciales();
@@ -67,7 +114,6 @@ export default function GastosScreen() {
       } = await supabase.auth.getUser();
       if (!user) return;
 
-      // Eliminamos la consulta de métodos de pago para optimizar rendimiento
       const [transaccionesRes, categoriasRes] = await Promise.all([
         supabase
           .from("transactions")
@@ -93,6 +139,146 @@ export default function GastosScreen() {
     }
   };
 
+  // =====================================================================
+  // LÓGICA DE GRABACIÓN E INTELIGENCIA ARTIFICIAL (GEMINI)
+  // =====================================================================
+
+  const startRecording = async () => {
+    try {
+      if (categorias.length === 0) {
+        Alert.alert(
+          "Atención",
+          "Debes crear categorías antes de agregar gastos.",
+        );
+        return;
+      }
+
+      // Pedimos permiso de micrófono
+      const permission = await Audio.requestPermissionsAsync();
+      if (permission.status !== "granted") {
+        Alert.alert(
+          "Permiso denegado",
+          "Necesitamos acceso al micrófono para detectar tu voz.",
+        );
+        return;
+      }
+
+      // Configuramos el motor de audio para iOS/Android
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: true,
+        playsInSilentModeIOS: true,
+      });
+
+      // Iniciamos grabación en alta calidad
+      const { recording } = await Audio.Recording.createAsync(
+        Audio.RecordingOptionsPresets.HIGH_QUALITY,
+      );
+      setRecording(recording);
+    } catch (err) {
+      console.error("Error al iniciar grabación", err);
+      Alert.alert("Error", "No se pudo iniciar el micrófono.");
+    }
+  };
+
+  const stopRecordingAndProcess = async () => {
+    if (!recording) return;
+    setIsProcessingVoice(true);
+
+    try {
+      // Detenemos la grabación y guardamos el archivo temporal
+      await recording.stopAndUnloadAsync();
+      const uri = recording.getURI();
+      setRecording(undefined);
+
+      if (!uri) throw new Error("No se pudo obtener el audio.");
+
+      // Convertimos el audio a Base64
+      const base64Audio = await FileSystem.readAsStringAsync(uri, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+
+      // Preparamos el contexto para Gemini (Fecha actual y Categorías existentes)
+      const fechaHoy = new Date().toISOString().split("T")[0];
+      const nombresCategorias = categorias.map((c) => c.name).join(", ");
+
+      // El "Prompt" estricto que obliga a la IA a devolver un JSON
+      const prompt = `
+        Eres un asistente financiero experto.
+        Escucha el audio adjunto y extrae los datos del gasto. 
+        Hoy es ${fechaHoy}. Si el usuario dice "ayer", calcula la fecha correcta.
+        Las categorías válidas en la base de datos son: ${nombresCategorias}. 
+        
+        Devuelve ÚNICAMENTE un objeto JSON válido con esta estructura exacta, sin texto adicional ni formato Markdown:
+        {
+          "description": "nombre descriptivo y corto",
+          "amount": numero_entero_sin_simbolos,
+          "date": "YYYY-MM-DD",
+          "category": "nombre de la categoria más parecida de la lista proporcionada"
+        }
+      `;
+
+      // Llamada directa a la API de Google Gemini 1.5 Flash
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [
+              {
+                parts: [
+                  { text: prompt },
+                  { inlineData: { mimeType: "audio/mp4", data: base64Audio } },
+                ],
+              },
+            ],
+          }),
+        },
+      );
+
+      const data = await response.json();
+
+      if (data.error) {
+        throw new Error(data.error.message);
+      }
+
+      // Limpiamos el texto que devuelve Gemini (por si incluye comillas raras o etiquetas markdown)
+      let jsonText = data.candidates[0].content.parts[0].text;
+      jsonText = jsonText
+        .replace(/```json/g, "")
+        .replace(/```/g, "")
+        .trim();
+
+      const gastoIA = JSON.parse(jsonText);
+
+      // Mapeamos el nombre de la categoría devuelta por IA con tu ID real de la BD
+      const categoriaEncontrada = categorias.find(
+        (c) => c.name.toLowerCase() === gastoIA.category.toLowerCase(),
+      );
+
+      // Seteamos los estados del formulario con lo que entendió la IA
+      setDescription(gastoIA.description);
+      setAmount(gastoIA.amount.toString());
+      if (gastoIA.date) setDate(new Date(gastoIA.date + "T00:00:00")); // Evita problemas de zona horaria
+      if (categoriaEncontrada) setSelectedCategoryId(categoriaEncontrada.id);
+
+      // Abrimos el modal mágicamente
+      setModalNuevoVisible(true);
+    } catch (err: any) {
+      console.error("Error procesando voz", err);
+      Alert.alert(
+        "No entendí el audio",
+        "Asegúrate de hablar claro e indicar monto y descripción.",
+      );
+    } finally {
+      setIsProcessingVoice(false);
+    }
+  };
+
+  // =====================================================================
+  // RESTO DEL CÓDIGO CRUD Y UI
+  // =====================================================================
+
   const agregarGasto = async () => {
     if (!description || !amount || !selectedCategoryId) {
       Alert.alert(
@@ -108,15 +294,15 @@ export default function GastosScreen() {
       } = await supabase.auth.getUser();
       if (!user) return;
 
-      const fechaActual = new Date().toISOString().split("T")[0];
+      const fechaDB = date.toISOString().split("T")[0];
 
       const nuevaTransaccion = {
         user_id: user.id,
         description,
         amount: parseFloat(amount),
-        date: fechaActual,
+        date: fechaDB,
         category_id: selectedCategoryId,
-        payment_method_id: null, // Enviamos nulo explícitamente para uso futuro
+        payment_method_id: null,
       };
 
       const { data, error } = await supabase
@@ -127,17 +313,76 @@ export default function GastosScreen() {
 
       if (error) throw error;
 
-      setListaGastos([data, ...listaGastos]);
+      const nuevaLista = [data, ...listaGastos].sort(
+        (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime(),
+      );
+
+      setListaGastos(nuevaLista);
       setDescription("");
       setAmount("");
-      setModalVisible(false);
+      setDate(new Date());
+      setModalNuevoVisible(false);
       Keyboard.dismiss();
     } catch (error: any) {
       Alert.alert("Error al guardar", error.message);
     }
   };
 
-  const gastosAgrupados = listaGastos.reduce(
+  const confirmarEliminacion = (id: string) => {
+    setGastoAEliminar(id);
+    setModalEliminarVisible(true);
+  };
+
+  const ejecutarEliminacion = async () => {
+    if (!gastoAEliminar) return;
+
+    try {
+      const { error } = await supabase
+        .from("transactions")
+        .delete()
+        .eq("id", gastoAEliminar);
+      if (error) throw error;
+
+      setListaGastos((prev) =>
+        prev.filter((gasto) => gasto.id !== gastoAEliminar),
+      );
+    } catch (error: any) {
+      Alert.alert("Error al eliminar", error.message);
+    } finally {
+      setModalEliminarVisible(false);
+      setGastoAEliminar(null);
+    }
+  };
+
+  const obtenerColorCategoria = (catName: string) => {
+    const index = categorias.findIndex((c) => c.name === catName);
+    return index !== -1 ? COLORS[index % COLORS.length] : "#334155";
+  };
+
+  const abrirDetalleGasto = (gasto: Transaction) => {
+    setGastoSeleccionado(gasto);
+    setModalDetalleVisible(true);
+  };
+
+  const gastosFiltrados = listaGastos.filter((gasto) => {
+    if (!searchQuery) return true;
+    const query = searchQuery.toLowerCase();
+    const matchDesc = gasto.description.toLowerCase().includes(query);
+    const matchCat = (gasto.categories?.name || "")
+      .toLowerCase()
+      .includes(query);
+    const fechaSplit = gasto.date.split("-");
+    const fechaLocal = new Date(
+      Number(fechaSplit[0]),
+      Number(fechaSplit[1]) - 1,
+      Number(fechaSplit[2]),
+    );
+    const fechaFormat = `${String(fechaLocal.getDate()).padStart(2, "0")}/${String(fechaLocal.getMonth() + 1).padStart(2, "0")}`;
+    const matchDate = fechaFormat.includes(query) || gasto.date.includes(query);
+    return matchDesc || matchCat || matchDate;
+  });
+
+  const gastosAgrupados = gastosFiltrados.reduce(
     (acc, curr) => {
       const catName = curr.categories?.name || "Sin Categoría";
       acc[catName] = (acc[catName] || 0) + Number(curr.amount);
@@ -148,47 +393,64 @@ export default function GastosScreen() {
 
   const pieData =
     Object.keys(gastosAgrupados).length > 0
-      ? Object.keys(gastosAgrupados).map((catName, index) => ({
+      ? Object.keys(gastosAgrupados).map((catName) => ({
           value: gastosAgrupados[catName],
-          color: COLORS[index % COLORS.length],
-          focused: index === 0,
+          color: obtenerColorCategoria(catName),
         }))
       : [{ value: 1, color: "#334155" }];
 
-  const totalMes = listaGastos.reduce(
+  const totalFiltrado = gastosFiltrados.reduce(
     (acc, curr) => acc + Number(curr.amount),
     0,
   );
 
   const renderItem = ({ item }: { item: Transaction }) => {
     const catName = item.categories?.name || "Desconocido";
-    const catKeys = Object.keys(gastosAgrupados);
-    const colorIndex = catKeys.indexOf(catName);
-    const cardColor =
-      colorIndex !== -1 ? COLORS[colorIndex % COLORS.length] : "#EC4899";
-    const fechaFormat = new Date(item.date).toLocaleDateString("es-AR", {
-      day: "2-digit",
-      month: "short",
-    });
+    const cardColor = obtenerColorCategoria(catName);
+
+    const fechaSplit = item.date.split("-");
+    const fechaLocal = new Date(
+      Number(fechaSplit[0]),
+      Number(fechaSplit[1]) - 1,
+      Number(fechaSplit[2]),
+    );
+    const nombreDia = NOMBRES_DIAS[fechaLocal.getDay()];
+    const diaNum = String(fechaLocal.getDate()).padStart(2, "0");
+    const mesNombre = NOMBRES_MESES[fechaLocal.getMonth()];
+    const anio = fechaLocal.getFullYear();
+    const fechaFormat = `${nombreDia} ${diaNum}-${mesNombre} ${anio}`;
 
     return (
-      <View style={styles.card}>
+      <TouchableOpacity
+        style={styles.card}
+        onPress={() => abrirDetalleGasto(item)}
+      >
         <View style={styles.cardLeft}>
           <View
             style={[styles.colorIndicator, { backgroundColor: cardColor }]}
           />
-          <View>
-            <Text style={styles.cardTitle}>{item.description}</Text>
+          <View style={styles.cardTextContainer}>
+            <Text style={styles.cardTitle} numberOfLines={1}>
+              {item.description}
+            </Text>
             <Text style={styles.cardSubtitle}>
               {item.categories?.icon ? `${item.categories.icon} ` : ""}
               {catName} • {fechaFormat}
             </Text>
           </View>
         </View>
-        <Text style={styles.cardAmount}>
-          ${Number(item.amount).toLocaleString("es-AR")}
-        </Text>
-      </View>
+        <View style={styles.cardRight}>
+          <Text style={styles.cardAmount}>
+            ${Number(item.amount).toLocaleString("es-AR")}
+          </Text>
+          <TouchableOpacity
+            onPress={() => confirmarEliminacion(item.id)}
+            style={styles.deleteBtn}
+          >
+            <Ionicons name="trash-outline" size={18} color="#EF4444" />
+          </TouchableOpacity>
+        </View>
+      </TouchableOpacity>
     );
   };
 
@@ -203,13 +465,13 @@ export default function GastosScreen() {
   return (
     <SafeAreaView style={styles.container}>
       <FlatList
-        data={listaGastos}
+        data={gastosFiltrados}
         keyExtractor={(item) => item.id}
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.listPadding}
         ListHeaderComponent={
           <View style={styles.headerContainer}>
-            <Text style={styles.headerTitle}>Resumen del Mes</Text>
+            <Text style={styles.headerTitle}>Resumen General</Text>
             <View style={styles.chartContainer}>
               <PieChart
                 data={pieData}
@@ -222,41 +484,85 @@ export default function GastosScreen() {
                 centerLabelComponent={() => (
                   <View style={styles.centerLabel}>
                     <Text style={styles.centerLabelValue}>
-                      ${totalMes.toLocaleString("es-AR")}
+                      ${totalFiltrado.toLocaleString("es-AR")}
                     </Text>
                     <Text style={styles.centerLabelText}>Total</Text>
                   </View>
                 )}
               />
+              {Object.keys(gastosAgrupados).length > 0 && (
+                <View style={styles.leyendaContainer}>
+                  {Object.keys(gastosAgrupados).map((catName) => (
+                    <View key={catName} style={styles.leyendaItem}>
+                      <View
+                        style={[
+                          styles.colorIndicatorSmall,
+                          { backgroundColor: obtenerColorCategoria(catName) },
+                        ]}
+                      />
+                      <Text style={styles.leyendaText}>{catName}</Text>
+                    </View>
+                  ))}
+                </View>
+              )}
             </View>
-            <Text style={styles.sectionTitle}>Transacciones Recientes</Text>
+            <TextInput
+              style={styles.searchInput}
+              placeholder="Buscar"
+              placeholderTextColor="#94A3B8"
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+            />
+            <Text style={styles.sectionTitle}>
+              {searchQuery
+                ? "Resultados de la búsqueda"
+                : "Transacciones Recientes"}
+            </Text>
           </View>
         }
         renderItem={renderItem}
         ListEmptyComponent={
-          <Text style={styles.emptyText}>
-            No hay transacciones registradas.
-          </Text>
+          <Text style={styles.emptyText}>No se encontraron transacciones.</Text>
         }
       />
 
-      <TouchableOpacity
-        style={styles.fab}
-        onPress={() => {
-          if (categorias.length === 0) {
-            Alert.alert(
-              "Atención",
-              "Debes crear categorías en tu base de datos primero.",
-            );
-            return;
-          }
-          setModalVisible(true);
-        }}
-      >
-        <Text style={styles.fabIcon}>+</Text>
-      </TouchableOpacity>
+      {/* NUEVO: CONTENEDOR DE BOTONES FLOTANTES (VOZ Y MANUAL) */}
+      <View style={styles.fabContainer}>
+        {/* Botón de Voz */}
+        <TouchableOpacity
+          style={[styles.fabVoice, recording && styles.fabRecording]}
+          onPressIn={startRecording}
+          onPressOut={stopRecordingAndProcess}
+          disabled={isProcessingVoice}
+          activeOpacity={0.8}
+        >
+          {isProcessingVoice ? (
+            <ActivityIndicator color="#FFF" size="small" />
+          ) : (
+            <Ionicons name="mic" size={28} color="#FFF" />
+          )}
+        </TouchableOpacity>
 
-      <Modal visible={modalVisible} animationType="slide" transparent>
+        {/* Botón Manual */}
+        <TouchableOpacity
+          style={styles.fab}
+          onPress={() => {
+            if (categorias.length === 0) {
+              Alert.alert(
+                "Atención",
+                "Debes crear categorías en tu base de datos primero.",
+              );
+              return;
+            }
+            setModalNuevoVisible(true);
+          }}
+        >
+          <Text style={styles.fabIcon}>+</Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* MODAL DE NUEVO GASTO */}
+      <Modal visible={modalNuevoVisible} animationType="slide" transparent>
         <TouchableWithoutFeedback onPress={() => Keyboard.dismiss()}>
           <View style={styles.modalOverlay}>
             <KeyboardAvoidingView
@@ -273,6 +579,7 @@ export default function GastosScreen() {
                   value={description}
                   onChangeText={setDescription}
                 />
+
                 <TextInput
                   style={styles.input}
                   placeholder="Monto (ej. 15000)"
@@ -281,6 +588,39 @@ export default function GastosScreen() {
                   value={amount}
                   onChangeText={setAmount}
                 />
+
+                <Text style={styles.labelCategoria}>Fecha del Gasto:</Text>
+                <TouchableOpacity
+                  style={styles.datePickerBtn}
+                  onPress={() => setShowDatePicker(true)}
+                >
+                  <Text style={styles.datePickerText}>
+                    {date.toLocaleDateString("es-AR", {
+                      weekday: "short",
+                      day: "2-digit",
+                      month: "short",
+                      year: "numeric",
+                    })}
+                  </Text>
+                </TouchableOpacity>
+
+                {showDatePicker && (
+                  <DateTimePicker
+                    value={date}
+                    mode="date"
+                    display="default"
+                    maximumDate={new Date()}
+                    onChange={(event, selectedDate) => {
+                      setShowDatePicker(Platform.OS === "ios");
+                      if (event.type === "set" && selectedDate) {
+                        setDate(selectedDate);
+                        if (Platform.OS === "android") setShowDatePicker(false);
+                      } else {
+                        setShowDatePicker(false);
+                      }
+                    }}
+                  />
+                )}
 
                 <Text style={styles.labelCategoria}>Categoría:</Text>
                 <View style={styles.categoriasContainer}>
@@ -313,7 +653,12 @@ export default function GastosScreen() {
                 <View style={styles.modalButtons}>
                   <TouchableOpacity
                     style={[styles.btn, styles.btnCancel]}
-                    onPress={() => setModalVisible(false)}
+                    onPress={() => {
+                      setModalNuevoVisible(false);
+                      setDescription("");
+                      setAmount("");
+                      setDate(new Date());
+                    }}
                   >
                     <Text style={styles.btnTextCancel}>Cancelar</Text>
                   </TouchableOpacity>
@@ -329,6 +674,120 @@ export default function GastosScreen() {
           </View>
         </TouchableWithoutFeedback>
       </Modal>
+
+      {/* MODAL DE DETALLE DE GASTO */}
+      <Modal visible={modalDetalleVisible} animationType="fade" transparent>
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setModalDetalleVisible(false)}
+        >
+          <TouchableWithoutFeedback>
+            <View style={styles.modalContent}>
+              {gastoSeleccionado && (
+                <>
+                  <Text style={styles.modalTitle}>Detalle de Transacción</Text>
+                  <View style={styles.detailBox}>
+                    <View style={styles.detailRow}>
+                      <Text style={styles.detailLabel}>Descripción:</Text>
+                      <Text style={styles.detailValue}>
+                        {gastoSeleccionado.description}
+                      </Text>
+                    </View>
+                    <View style={styles.detailRow}>
+                      <Text style={styles.detailLabel}>Monto:</Text>
+                      <Text
+                        style={[
+                          styles.detailValue,
+                          { color: "#EF4444", fontWeight: "bold" },
+                        ]}
+                      >
+                        $
+                        {Number(gastoSeleccionado.amount).toLocaleString(
+                          "es-AR",
+                        )}
+                      </Text>
+                    </View>
+                    <View style={styles.detailRow}>
+                      <Text style={styles.detailLabel}>Fecha:</Text>
+                      <Text style={styles.detailValue}>
+                        {new Date(
+                          gastoSeleccionado.date + "T00:00:00",
+                        ).toLocaleDateString("es-AR", {
+                          day: "2-digit",
+                          month: "long",
+                          year: "numeric",
+                        })}
+                      </Text>
+                    </View>
+                    <View style={styles.detailRow}>
+                      <Text style={styles.detailLabel}>Horario:</Text>
+                      <Text style={styles.detailValue}>
+                        {gastoSeleccionado.created_at
+                          ? new Date(
+                              gastoSeleccionado.created_at,
+                            ).toLocaleTimeString("es-AR", {
+                              hour: "2-digit",
+                              minute: "2-digit",
+                            })
+                          : "No disponible"}
+                      </Text>
+                    </View>
+                    <View style={styles.detailRow}>
+                      <Text style={styles.detailLabel}>Categoría:</Text>
+                      <Text style={styles.detailValue}>
+                        {gastoSeleccionado.categories?.icon
+                          ? `${gastoSeleccionado.categories.icon} `
+                          : ""}
+                        {gastoSeleccionado.categories?.name || "Desconocido"}
+                      </Text>
+                    </View>
+                  </View>
+                </>
+              )}
+              <TouchableOpacity
+                style={styles.btnCerrar}
+                onPress={() => setModalDetalleVisible(false)}
+              >
+                <Text style={styles.btnCerrarText}>Aceptar</Text>
+              </TouchableOpacity>
+            </View>
+          </TouchableWithoutFeedback>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* MODAL CONFIRMAR ELIMINACIÓN */}
+      <Modal visible={modalEliminarVisible} animationType="fade" transparent>
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setModalEliminarVisible(false)}
+        >
+          <TouchableWithoutFeedback>
+            <View style={styles.modalContent}>
+              <Text style={styles.modalTitle}>Eliminar Gasto</Text>
+              <Text style={styles.modalText}>
+                ¿Estás seguro de que deseas eliminar este gasto? Esta acción no
+                se puede deshacer.
+              </Text>
+              <View style={styles.modalButtons}>
+                <TouchableOpacity
+                  style={[styles.btn, styles.btnCancel]}
+                  onPress={() => setModalEliminarVisible(false)}
+                >
+                  <Text style={styles.btnTextCancel}>Cancelar</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.btn, { backgroundColor: "#EF4444" }]}
+                  onPress={ejecutarEliminacion}
+                >
+                  <Text style={styles.btnTextSave}>Eliminar</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </TouchableWithoutFeedback>
+        </TouchableOpacity>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -336,8 +795,8 @@ export default function GastosScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#0F172A" },
   centerAll: { justifyContent: "center", alignItems: "center" },
-  listPadding: { padding: 20, paddingBottom: 40 },
-  headerContainer: { marginBottom: 20 },
+  listPadding: { padding: 20, paddingBottom: 100 }, // Margen inferior extra para los botones
+  headerContainer: { marginBottom: 10 },
   headerTitle: {
     fontSize: 28,
     fontWeight: "bold",
@@ -350,7 +809,7 @@ const styles = StyleSheet.create({
     padding: 24,
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 32,
+    marginBottom: 24,
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 10 },
     shadowOpacity: 0.3,
@@ -360,6 +819,26 @@ const styles = StyleSheet.create({
   centerLabel: { justifyContent: "center", alignItems: "center" },
   centerLabelValue: { fontSize: 22, fontWeight: "bold", color: "#F8FAFC" },
   centerLabelText: { fontSize: 14, color: "#94A3B8" },
+  leyendaContainer: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "center",
+    marginTop: 24,
+    gap: 12,
+  },
+  leyendaItem: { flexDirection: "row", alignItems: "center" },
+  colorIndicatorSmall: { width: 8, height: 8, borderRadius: 4, marginRight: 6 },
+  leyendaText: { color: "#94A3B8", fontSize: 13 },
+  searchInput: {
+    backgroundColor: "#1E293B",
+    color: "#F8FAFC",
+    padding: 16,
+    borderRadius: 16,
+    fontSize: 15,
+    marginBottom: 24,
+    borderWidth: 1,
+    borderColor: "#334155",
+  },
   sectionTitle: {
     fontSize: 20,
     fontWeight: "600",
@@ -376,7 +855,8 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     marginBottom: 12,
   },
-  cardLeft: { flexDirection: "row", alignItems: "center" },
+  cardLeft: { flexDirection: "row", alignItems: "center", flex: 1 },
+  cardTextContainer: { flex: 1, paddingRight: 8 },
   colorIndicator: { width: 12, height: 12, borderRadius: 6, marginRight: 16 },
   cardTitle: {
     fontSize: 16,
@@ -384,12 +864,32 @@ const styles = StyleSheet.create({
     color: "#F8FAFC",
     marginBottom: 4,
   },
-  cardSubtitle: { fontSize: 13, color: "#94A3B8" },
-  cardAmount: { fontSize: 16, fontWeight: "bold", color: "#EF4444" },
-  fab: {
+  cardSubtitle: { fontSize: 13, color: "#94A3B8", textTransform: "capitalize" },
+  cardRight: { flexDirection: "row", alignItems: "center" },
+  cardAmount: {
+    fontSize: 16,
+    fontWeight: "bold",
+    color: "#EF4444",
+    marginRight: 12,
+  },
+  deleteBtn: {
+    backgroundColor: "#EF444420",
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+
+  /* NUEVOS ESTILOS PARA LOS BOTONES FLOTANTES APILADOS */
+  fabContainer: {
     position: "absolute",
     bottom: 24,
     right: 24,
+    gap: 16,
+    alignItems: "center",
+  },
+  fab: {
     width: 60,
     height: 60,
     borderRadius: 30,
@@ -403,6 +903,21 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
   },
   fabIcon: { fontSize: 32, color: "#FFF", lineHeight: 36 },
+  fabVoice: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: "#8B5CF6",
+    justifyContent: "center",
+    alignItems: "center",
+    elevation: 5,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+  },
+  fabRecording: { backgroundColor: "#EF4444", transform: [{ scale: 1.1 }] }, // Efecto visual al grabar
+
   modalOverlay: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.7)",
@@ -421,6 +936,14 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
     color: "#F8FAFC",
     marginBottom: 20,
+    textAlign: "center",
+  },
+  modalText: {
+    fontSize: 15,
+    color: "#94A3B8",
+    lineHeight: 22,
+    textAlign: "center",
+    marginBottom: 24,
   },
   input: {
     backgroundColor: "#0F172A",
@@ -430,6 +953,16 @@ const styles = StyleSheet.create({
     marginBottom: 16,
     fontSize: 16,
   },
+  datePickerBtn: {
+    backgroundColor: "#0F172A",
+    padding: 16,
+    borderRadius: 12,
+    marginBottom: 16,
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#334155",
+  },
+  datePickerText: { color: "#F8FAFC", fontSize: 16, fontWeight: "500" },
   labelCategoria: {
     color: "#94A3B8",
     fontSize: 14,
@@ -459,4 +992,33 @@ const styles = StyleSheet.create({
   btnSave: { backgroundColor: "#3B82F6" },
   btnTextCancel: { color: "#F8FAFC", fontWeight: "600" },
   btnTextSave: { color: "#FFF", fontWeight: "bold" },
+  detailBox: {
+    backgroundColor: "#0F172A",
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 24,
+  },
+  detailRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: "#1E293B",
+  },
+  detailLabel: { fontSize: 14, color: "#94A3B8", fontWeight: "500" },
+  detailValue: {
+    fontSize: 15,
+    color: "#F8FAFC",
+    fontWeight: "600",
+    maxWidth: "65%",
+    textAlign: "right",
+  },
+  btnCerrar: {
+    backgroundColor: "#3B82F6",
+    padding: 16,
+    borderRadius: 12,
+    alignItems: "center",
+  },
+  btnCerrarText: { color: "#FFF", fontWeight: "bold", fontSize: 16 },
 });

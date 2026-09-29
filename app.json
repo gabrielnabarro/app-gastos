@@ -3,6 +3,7 @@
     "name": "app-gastos-v2",
     "slug": "app-gastos-v2",
     "version": "1.0.0",
+    "newArchEnabled": false,
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "appgastosv2",
@@ -17,7 +18,8 @@
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "package": "com.gnabarro.appgastosv2"
     },
     "web": {
       "output": "static",
@@ -38,6 +40,12 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "990bad38-68da-4c4e-8810-e89f06f899e0"
+      }
     }
   }
 }
