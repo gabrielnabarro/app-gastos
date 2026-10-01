@@ -1,7 +1,8 @@
 // src/app/(tabs)/gastos.tsx
 import { Ionicons } from "@expo/vector-icons";
 import DateTimePicker from "@react-native-community/datetimepicker";
-import { useEffect, useState } from "react";
+import * as FileSystem from "expo-file-system";
+import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -9,8 +10,8 @@ import {
   Keyboard,
   KeyboardAvoidingView,
   Modal,
+  PermissionsAndroid,
   Platform,
-  SafeAreaView,
   StyleSheet,
   Text,
   TextInput,
@@ -19,10 +20,12 @@ import {
   View,
 } from "react-native";
 import { PieChart } from "react-native-gifted-charts";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { supabase } from "../../../supabase";
-// NUEVAS IMPORTACIONES PARA AUDIO Y ARCHIVOS
-import { Audio } from "expo-av";
-import * as FileSystem from "expo-file-system";
+
+// SOLUCIÓN: Importamos el Namespace completo de la ÚNICA librería oficial.
+// Esto evita cualquier colapso por "undefined".
+import * as ExpoAudio from "expo-audio";
 
 interface Category {
   id: string;
@@ -74,9 +77,9 @@ const NOMBRES_MESES = [
   "dic",
 ];
 
-// =========================
-// 🚨 API KEY GOOGLE AI STUDIO 🚨
-// =========================
+// =====================================================================
+// 🚨 REEMPLAZA ESTO CON TU CLAVE REAL DE GOOGLE AI STUDIO 🚨
+// =====================================================================
 const GEMINI_API_KEY = "AQ.Ab8RN6Jl785DFkJ7qY_8vVaq_s5Fesny8D2S2ai09pzTI9zaog";
 
 export default function GastosScreen() {
@@ -99,12 +102,26 @@ export default function GastosScreen() {
   const [date, setDate] = useState(new Date());
   const [showDatePicker, setShowDatePicker] = useState(false);
 
-  // NUEVOS ESTADOS PARA GRABACIÓN DE VOZ
-  const [recording, setRecording] = useState<Audio.Recording | undefined>();
+  // CONFIGURACIÓN DE AUDIO (WAV 16kHz)
+  const audioRecorder = ExpoAudio.useAudioRecorder({
+    extension: ".wav",
+    sampleRate: 16000,
+    numberOfChannels: 1,
+    bitRate: 128000,
+  });
+
+  const isPressing = useRef<boolean>(false);
+  const pressStartTime = useRef<number>(0);
+  const [isRecordingUI, setIsRecordingUI] = useState(false);
   const [isProcessingVoice, setIsProcessingVoice] = useState(false);
 
   useEffect(() => {
     cargarDatosIniciales();
+    if (Platform.OS === "android") {
+      PermissionsAndroid.request(
+        PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
+      ).catch(console.warn);
+    }
   }, []);
 
   const cargarDatosIniciales = async () => {
@@ -140,8 +157,23 @@ export default function GastosScreen() {
   };
 
   // =====================================================================
-  // LÓGICA DE GRABACIÓN E INTELIGENCIA ARTIFICIAL (GEMINI)
+  // LÓGICA DE GRABACIÓN BLINDADA MEDIANTE NAMESPACE (iOS + Android)
   // =====================================================================
+
+  const setAudioSessionForIOS = async (active: boolean) => {
+    if (Platform.OS !== "ios") return;
+    try {
+      // Usamos el objeto global ExpoAudio para prevenir crashes de "undefined"
+      if (typeof (ExpoAudio as any).setAudioModeAsync === "function") {
+        await (ExpoAudio as any).setAudioModeAsync({
+          allowsRecordingIOS: active,
+          playsInSilentModeIOS: true,
+        });
+      }
+    } catch (e) {
+      console.warn("No se pudo configurar la sesión de audio:", e);
+    }
+  };
 
   const startRecording = async () => {
     try {
@@ -153,55 +185,101 @@ export default function GastosScreen() {
         return;
       }
 
-      // Pedimos permiso de micrófono
-      const permission = await Audio.requestPermissionsAsync();
-      if (permission.status !== "granted") {
+      isPressing.current = true;
+      let hasPermission = false;
+
+      // 1. Verificación de Permisos Dinámica
+      if (Platform.OS === "android") {
+        const granted = await PermissionsAndroid.request(
+          PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
+        );
+        hasPermission = granted === PermissionsAndroid.RESULTS.GRANTED;
+      } else {
+        if (typeof (ExpoAudio as any).requestPermissionsAsync === "function") {
+          const status = await (ExpoAudio as any).requestPermissionsAsync();
+          hasPermission = status?.granted || status?.status === "granted";
+        } else {
+          // Si Expo ocultó la función, permitimos que el sistema iOS muestre el cartel automáticamente al grabar
+          hasPermission = true;
+        }
+      }
+
+      if (!hasPermission) {
         Alert.alert(
           "Permiso denegado",
-          "Necesitamos acceso al micrófono para detectar tu voz.",
+          "Ve a la Configuración de tu celular y activa el Micrófono.",
         );
+        isPressing.current = false;
         return;
       }
 
-      // Configuramos el motor de audio para iOS/Android
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: true,
-        playsInSilentModeIOS: true,
-      });
+      if (!isPressing.current) return;
 
-      // Iniciamos grabación en alta calidad
-      const { recording } = await Audio.Recording.createAsync(
-        Audio.RecordingOptionsPresets.HIGH_QUALITY,
+      // 2. EL CANDADO DE APPLE: Configuramos la sesión de forma segura
+      await setAudioSessionForIOS(true);
+
+      // 3. Encendemos el hardware
+      pressStartTime.current = Date.now();
+      audioRecorder.record();
+
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      if (!audioRecorder.isRecording) {
+        throw new Error("El sistema operativo bloqueó el micrófono.");
+      }
+
+      setIsRecordingUI(true);
+    } catch (err: any) {
+      console.error("Error al iniciar grabación:", err);
+      Alert.alert(
+        "Fallo de Hardware",
+        err.message || "No se pudo encender el micrófono.",
       );
-      setRecording(recording);
-    } catch (err) {
-      console.error("Error al iniciar grabación", err);
-      Alert.alert("Error", "No se pudo iniciar el micrófono.");
+      isPressing.current = false;
+      setIsRecordingUI(false);
     }
   };
 
   const stopRecordingAndProcess = async () => {
-    if (!recording) return;
-    setIsProcessingVoice(true);
+    if (!isRecordingUI) return;
+
+    // VALIDACIÓN ANTI-TAP (< 1.5s)
+    const pressDuration = Date.now() - pressStartTime.current;
+    if (pressDuration < 1500) {
+      setIsRecordingUI(false);
+      audioRecorder.stop();
+      await setAudioSessionForIOS(false);
+      Alert.alert(
+        "Audio muy corto",
+        "Mantén presionado el botón por más de 1.5 segundos para dictar tu gasto.",
+      );
+      return;
+    }
 
     try {
-      // Detenemos la grabación y guardamos el archivo temporal
-      await recording.stopAndUnloadAsync();
-      const uri = recording.getURI();
-      setRecording(undefined);
+      setIsRecordingUI(false);
+      setIsProcessingVoice(true);
 
-      if (!uri) throw new Error("No se pudo obtener el audio.");
+      // 1. Apagamos el micrófono
+      audioRecorder.stop();
 
-      // Convertimos el audio a Base64
+      // 2. DEVOLVEMOS EL CANDADO A APPLE
+      await setAudioSessionForIOS(false);
+
+      // 3. Retraso seguro de escritura en disco
+      await new Promise((resolve) => setTimeout(resolve, 500));
+
+      const uri = audioRecorder.uri;
+
+      if (!uri)
+        throw new Error("Fallo crítico: El sistema no guardó el archivo WAV.");
+
       const base64Audio = await FileSystem.readAsStringAsync(uri, {
         encoding: FileSystem.EncodingType.Base64,
       });
 
-      // Preparamos el contexto para Gemini (Fecha actual y Categorías existentes)
       const fechaHoy = new Date().toISOString().split("T")[0];
       const nombresCategorias = categorias.map((c) => c.name).join(", ");
 
-      // El "Prompt" estricto que obliga a la IA a devolver un JSON
       const prompt = `
         Eres un asistente financiero experto.
         Escucha el audio adjunto y extrae los datos del gasto. 
@@ -217,7 +295,6 @@ export default function GastosScreen() {
         }
       `;
 
-      // Llamada directa a la API de Google Gemini 1.5 Flash
       const response = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
         {
@@ -228,7 +305,7 @@ export default function GastosScreen() {
               {
                 parts: [
                   { text: prompt },
-                  { inlineData: { mimeType: "audio/mp4", data: base64Audio } },
+                  { inlineData: { mimeType: "audio/wav", data: base64Audio } },
                 ],
               },
             ],
@@ -238,11 +315,8 @@ export default function GastosScreen() {
 
       const data = await response.json();
 
-      if (data.error) {
-        throw new Error(data.error.message);
-      }
+      if (data.error) throw new Error(data.error.message);
 
-      // Limpiamos el texto que devuelve Gemini (por si incluye comillas raras o etiquetas markdown)
       let jsonText = data.candidates[0].content.parts[0].text;
       jsonText = jsonText
         .replace(/```json/g, "")
@@ -251,33 +325,27 @@ export default function GastosScreen() {
 
       const gastoIA = JSON.parse(jsonText);
 
-      // Mapeamos el nombre de la categoría devuelta por IA con tu ID real de la BD
       const categoriaEncontrada = categorias.find(
         (c) => c.name.toLowerCase() === gastoIA.category.toLowerCase(),
       );
 
-      // Seteamos los estados del formulario con lo que entendió la IA
       setDescription(gastoIA.description);
       setAmount(gastoIA.amount.toString());
-      if (gastoIA.date) setDate(new Date(gastoIA.date + "T00:00:00")); // Evita problemas de zona horaria
+      if (gastoIA.date) setDate(new Date(gastoIA.date + "T00:00:00"));
       if (categoriaEncontrada) setSelectedCategoryId(categoriaEncontrada.id);
 
-      // Abrimos el modal mágicamente
       setModalNuevoVisible(true);
     } catch (err: any) {
       console.error("Error procesando voz", err);
       Alert.alert(
-        "No entendí el audio",
-        "Asegúrate de hablar claro e indicar monto y descripción.",
+        "No se pudo procesar",
+        err.message ||
+          "Asegúrate de hablar claro e indicar monto y descripción.",
       );
     } finally {
       setIsProcessingVoice(false);
     }
   };
-
-  // =====================================================================
-  // RESTO DEL CÓDIGO CRUD Y UI
-  // =====================================================================
 
   const agregarGasto = async () => {
     if (!description || !amount || !selectedCategoryId) {
@@ -526,11 +594,9 @@ export default function GastosScreen() {
         }
       />
 
-      {/* NUEVO: CONTENEDOR DE BOTONES FLOTANTES (VOZ Y MANUAL) */}
       <View style={styles.fabContainer}>
-        {/* Botón de Voz */}
         <TouchableOpacity
-          style={[styles.fabVoice, recording && styles.fabRecording]}
+          style={[styles.fabVoice, isRecordingUI && styles.fabRecording]}
           onPressIn={startRecording}
           onPressOut={stopRecordingAndProcess}
           disabled={isProcessingVoice}
@@ -543,7 +609,6 @@ export default function GastosScreen() {
           )}
         </TouchableOpacity>
 
-        {/* Botón Manual */}
         <TouchableOpacity
           style={styles.fab}
           onPress={() => {
@@ -561,7 +626,6 @@ export default function GastosScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* MODAL DE NUEVO GASTO */}
       <Modal visible={modalNuevoVisible} animationType="slide" transparent>
         <TouchableWithoutFeedback onPress={() => Keyboard.dismiss()}>
           <View style={styles.modalOverlay}>
@@ -675,7 +739,6 @@ export default function GastosScreen() {
         </TouchableWithoutFeedback>
       </Modal>
 
-      {/* MODAL DE DETALLE DE GASTO */}
       <Modal visible={modalDetalleVisible} animationType="fade" transparent>
         <TouchableOpacity
           style={styles.modalOverlay}
@@ -756,7 +819,6 @@ export default function GastosScreen() {
         </TouchableOpacity>
       </Modal>
 
-      {/* MODAL CONFIRMAR ELIMINACIÓN */}
       <Modal visible={modalEliminarVisible} animationType="fade" transparent>
         <TouchableOpacity
           style={styles.modalOverlay}
@@ -795,7 +857,7 @@ export default function GastosScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#0F172A" },
   centerAll: { justifyContent: "center", alignItems: "center" },
-  listPadding: { padding: 20, paddingBottom: 100 }, // Margen inferior extra para los botones
+  listPadding: { padding: 20, paddingBottom: 100 },
   headerContainer: { marginBottom: 10 },
   headerTitle: {
     fontSize: 28,
@@ -881,7 +943,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
 
-  /* NUEVOS ESTILOS PARA LOS BOTONES FLOTANTES APILADOS */
   fabContainer: {
     position: "absolute",
     bottom: 24,
@@ -916,7 +977,7 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.3,
     shadowRadius: 4,
   },
-  fabRecording: { backgroundColor: "#EF4444", transform: [{ scale: 1.1 }] }, // Efecto visual al grabar
+  fabRecording: { backgroundColor: "#EF4444", transform: [{ scale: 1.1 }] },
 
   modalOverlay: {
     flex: 1,
