@@ -77,8 +77,7 @@ const NOMBRES_MESES = [
   "dic",
 ];
 
-// apikey
-const GEMINI_API_KEY = "";
+const GEMINI_API_KEY = "AQ.Ab8RN6Jl785DFkJ7qY_8vVaq_s5Fesny8D2S2ai09pzTI9zaog";
 
 export default function GastosScreen() {
   const [listaGastos, setListaGastos] = useState<Transaction[]>([]);
