@@ -23,7 +23,8 @@ import { PieChart } from "react-native-gifted-charts";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { supabase } from "../../../supabase";
 
-// Importación integral del motor de audio
+// SOLUCIÓN: Importamos el Namespace completo de la ÚNICA librería oficial.
+// Esto evita cualquier colapso por "undefined".
 import * as ExpoAudio from "expo-audio";
 
 interface Category {
@@ -79,7 +80,7 @@ const NOMBRES_MESES = [
 // =====================================================================
 // 🚨 REEMPLAZA ESTO CON TU CLAVE REAL DE GOOGLE AI STUDIO 🚨
 // =====================================================================
-const GEMINI_API_KEY = "TU_API_KEY_AQUI";
+const GEMINI_API_KEY = "AQ.Ab8RN6Jl785DFkJ7qY_8vVaq_s5Fesny8D2S2ai09pzTI9zaog";
 
 export default function GastosScreen() {
   const [listaGastos, setListaGastos] = useState<Transaction[]>([]);
@@ -101,7 +102,7 @@ export default function GastosScreen() {
   const [date, setDate] = useState(new Date());
   const [showDatePicker, setShowDatePicker] = useState(false);
 
-  // CONFIGURACIÓN DE AUDIO (WAV 16kHz - Compatibilidad total Android/iOS)
+  // CONFIGURACIÓN DE AUDIO (WAV 16kHz)
   const audioRecorder = ExpoAudio.useAudioRecorder({
     extension: ".wav",
     sampleRate: 16000,
@@ -109,7 +110,6 @@ export default function GastosScreen() {
     bitRate: 128000,
   });
 
-  // SOLUCIÓN: Declaramos la variable que faltaba
   const isPressing = useRef<boolean>(false);
   const pressStartTime = useRef<number>(0);
   const [isRecordingUI, setIsRecordingUI] = useState(false);
@@ -157,8 +157,23 @@ export default function GastosScreen() {
   };
 
   // =====================================================================
-  // LÓGICA DE GRABACIÓN CON ESCÁNER DINÁMICO DE PERMISOS (iOS + Android)
+  // LÓGICA DE GRABACIÓN BLINDADA MEDIANTE NAMESPACE (iOS + Android)
   // =====================================================================
+
+  const setAudioSessionForIOS = async (active: boolean) => {
+    if (Platform.OS !== "ios") return;
+    try {
+      // Usamos el objeto global ExpoAudio para prevenir crashes de "undefined"
+      if (typeof (ExpoAudio as any).setAudioModeAsync === "function") {
+        await (ExpoAudio as any).setAudioModeAsync({
+          allowsRecordingIOS: active,
+          playsInSilentModeIOS: true,
+        });
+      }
+    } catch (e) {
+      console.warn("No se pudo configurar la sesión de audio:", e);
+    }
+  };
 
   const startRecording = async () => {
     try {
@@ -173,57 +188,26 @@ export default function GastosScreen() {
       isPressing.current = true;
       let hasPermission = false;
 
+      // 1. Verificación de Permisos Dinámica
       if (Platform.OS === "android") {
         const granted = await PermissionsAndroid.request(
           PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
         );
         hasPermission = granted === PermissionsAndroid.RESULTS.GRANTED;
       } else {
-        const EA = ExpoAudio as any;
-        const rootPermKey = Object.keys(EA).find(
-          (k) =>
-            k.toLowerCase().includes("request") &&
-            k.toLowerCase().includes("permission"),
-        );
-
-        if (rootPermKey && typeof EA[rootPermKey] === "function") {
-          const status = await EA[rootPermKey]();
-          hasPermission =
-            status?.granted || status?.status === "granted" || status === true;
-        } else if (EA.AudioModule) {
-          const amPermKey = Object.keys(EA.AudioModule).find(
-            (k) =>
-              k.toLowerCase().includes("request") &&
-              k.toLowerCase().includes("permission"),
-          );
-          if (amPermKey && typeof EA.AudioModule[amPermKey] === "function") {
-            const status = await EA.AudioModule[amPermKey]();
-            hasPermission =
-              status?.granted ||
-              status?.status === "granted" ||
-              status === true;
-          } else {
-            Alert.alert(
-              "Diagnóstico iOS",
-              "AudioModule exporta: " + Object.keys(EA.AudioModule).join(", "),
-            );
-            isPressing.current = false;
-            return;
-          }
+        if (typeof (ExpoAudio as any).requestPermissionsAsync === "function") {
+          const status = await (ExpoAudio as any).requestPermissionsAsync();
+          hasPermission = status?.granted || status?.status === "granted";
         } else {
-          Alert.alert(
-            "Diagnóstico iOS",
-            "ExpoAudio exporta: " + Object.keys(EA).join(", "),
-          );
-          isPressing.current = false;
-          return;
+          // Si Expo ocultó la función, permitimos que el sistema iOS muestre el cartel automáticamente al grabar
+          hasPermission = true;
         }
       }
 
       if (!hasPermission) {
         Alert.alert(
           "Permiso denegado",
-          "Por favor, ve a la Configuración de tu iPhone, busca Expo Go y activa el Micrófono.",
+          "Ve a la Configuración de tu celular y activa el Micrófono.",
         );
         isPressing.current = false;
         return;
@@ -231,14 +215,16 @@ export default function GastosScreen() {
 
       if (!isPressing.current) return;
 
+      // 2. EL CANDADO DE APPLE: Configuramos la sesión de forma segura
+      await setAudioSessionForIOS(true);
+
+      // 3. Encendemos el hardware
       pressStartTime.current = Date.now();
       audioRecorder.record();
 
       await new Promise((resolve) => setTimeout(resolve, 200));
       if (!audioRecorder.isRecording) {
-        throw new Error(
-          "El sistema operativo bloqueó la inicialización del micrófono.",
-        );
+        throw new Error("El sistema operativo bloqueó el micrófono.");
       }
 
       setIsRecordingUI(true);
@@ -256,13 +242,15 @@ export default function GastosScreen() {
   const stopRecordingAndProcess = async () => {
     if (!isRecordingUI) return;
 
+    // VALIDACIÓN ANTI-TAP (< 1.5s)
     const pressDuration = Date.now() - pressStartTime.current;
     if (pressDuration < 1500) {
       setIsRecordingUI(false);
       audioRecorder.stop();
+      await setAudioSessionForIOS(false);
       Alert.alert(
         "Audio muy corto",
-        "Por favor, mantén presionado el botón por más de 1.5 segundos para dictar tu gasto.",
+        "Mantén presionado el botón por más de 1.5 segundos para dictar tu gasto.",
       );
       return;
     }
@@ -271,15 +259,19 @@ export default function GastosScreen() {
       setIsRecordingUI(false);
       setIsProcessingVoice(true);
 
+      // 1. Apagamos el micrófono
       audioRecorder.stop();
 
+      // 2. DEVOLVEMOS EL CANDADO A APPLE
+      await setAudioSessionForIOS(false);
+
+      // 3. Retraso seguro de escritura en disco
       await new Promise((resolve) => setTimeout(resolve, 500));
 
       const uri = audioRecorder.uri;
 
-      if (!uri) {
+      if (!uri)
         throw new Error("Fallo crítico: El sistema no guardó el archivo WAV.");
-      }
 
       const base64Audio = await FileSystem.readAsStringAsync(uri, {
         encoding: FileSystem.EncodingType.Base64,
