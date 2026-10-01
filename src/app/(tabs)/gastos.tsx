@@ -77,10 +77,8 @@ const NOMBRES_MESES = [
   "dic",
 ];
 
-// =====================================================================
-// 🚨 REEMPLAZA ESTO CON TU CLAVE REAL DE GOOGLE AI STUDIO 🚨
-// =====================================================================
-const GEMINI_API_KEY = "AQ.Ab8RN6Jl785DFkJ7qY_8vVaq_s5Fesny8D2S2ai09pzTI9zaog";
+// apikey
+const GEMINI_API_KEY = "";
 
 export default function GastosScreen() {
   const [listaGastos, setListaGastos] = useState<Transaction[]>([]);
