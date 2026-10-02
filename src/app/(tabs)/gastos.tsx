@@ -79,7 +79,47 @@ const NOMBRES_MESES = [
 const GEMINI_API_KEY = ""; // <-- pegá tu API Key acá
 // gemini-1.5-flash está dado de baja (404) y gemini-2.5-flash se apaga el 16/10/2026.
 // Revisá https://ai.google.dev/gemini-api/docs/deprecations para el modelo vigente.
-const GEMINI_MODEL = "gemini-3.5-flash";
+// Se prueban en orden: si el primero está saturado (503) se pasa al siguiente.
+const GEMINI_MODELS = ["gemini-3.5-flash", "gemini-3.1-flash-lite"];
+const RETRYABLE_STATUS = [429, 500, 503, 504];
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// Llama a Gemini con reintentos (backoff exponencial) y fallback de modelo.
+async function callGemini(body: object) {
+  let lastError = "error desconocido";
+  for (const model of GEMINI_MODELS) {
+    for (let intento = 0; intento < 3; intento++) {
+      try {
+        const response = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-goog-api-key": GEMINI_API_KEY,
+            },
+            body: JSON.stringify(body),
+          },
+        );
+        const data = await response.json();
+        if (response.ok && !data.error) return data;
+
+        lastError = `Gemini (${response.status}): ${data?.error?.message ?? "error desconocido"}`;
+        if (!RETRYABLE_STATUS.includes(response.status)) {
+          if (response.status === 404) break; // modelo inexistente: probar el siguiente
+          throw new Error(lastError); // key inválida, request mal armado, etc.
+        }
+      } catch (e: any) {
+        if (e?.message?.startsWith("Gemini (")) throw e;
+        lastError = e?.message ?? lastError; // error de red: se reintenta
+      }
+      await sleep(800 * 2 ** intento); // 0.8s, 1.6s, 3.2s
+    }
+  }
+  throw new Error(
+    `${lastError}\n\nEl servicio de IA está saturado. Probá de nuevo en unos segundos.`,
+  );
+}
 const MIN_RECORDING_MS = 1500;
 
 // WAV/PCM en iOS; AAC (ADTS) en Android, porque MediaRecorder de Android NO puede grabar WAV.
@@ -311,38 +351,20 @@ export default function GastosScreen() {
         }
       `;
 
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-goog-api-key": GEMINI_API_KEY,
-          },
-          body: JSON.stringify({
-            contents: [
-              {
-                parts: [
-                  { text: prompt },
-                  { inlineData: { mimeType, data: base64Audio } },
-                ],
-              },
+      const data = await callGemini({
+        contents: [
+          {
+            parts: [
+              { text: prompt },
+              { inlineData: { mimeType, data: base64Audio } },
             ],
-            generationConfig: {
-              responseMimeType: "application/json",
-              temperature: 0,
-            },
-          }),
+          },
+        ],
+        generationConfig: {
+          responseMimeType: "application/json",
+          temperature: 0,
         },
-      );
-
-      const data = await response.json();
-
-      if (!response.ok || data.error) {
-        throw new Error(
-          `Gemini (${response.status}): ${data?.error?.message ?? "error desconocido"}`,
-        );
-      }
+      });
 
       const jsonText: string = (data.candidates?.[0]?.content?.parts ?? [])
         .map((p: any) => p.text ?? "")
