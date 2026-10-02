@@ -1,7 +1,7 @@
 // src/app/(tabs)/gastos.tsx
 import { Ionicons } from "@expo/vector-icons";
 import DateTimePicker from "@react-native-community/datetimepicker";
-import * as FileSystem from "expo-file-system";
+import { File } from "expo-file-system";
 import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -10,7 +10,6 @@ import {
   Keyboard,
   KeyboardAvoidingView,
   Modal,
-  PermissionsAndroid,
   Platform,
   StyleSheet,
   Text,
@@ -77,7 +76,39 @@ const NOMBRES_MESES = [
   "dic",
 ];
 
-const GEMINI_API_KEY = "";
+const GEMINI_API_KEY = "AQ.Ab8RN6Iz0KowG5MqSoBRKYhGjWSgLSsOkWhktYJID7ZBiajDXg"; // <-- pegá tu API Key acá
+// gemini-1.5-flash está dado de baja (404) y gemini-2.5-flash se apaga el 16/10/2026.
+// Revisá https://ai.google.dev/gemini-api/docs/deprecations para el modelo vigente.
+const GEMINI_MODEL = "gemini-3.5-flash";
+const MIN_RECORDING_MS = 1500;
+
+// WAV/PCM en iOS; AAC (ADTS) en Android, porque MediaRecorder de Android NO puede grabar WAV.
+// Los dos formatos son aceptados por Gemini (audio/wav y audio/aac).
+const RECORDING_OPTIONS: ExpoAudio.RecordingOptions = {
+  extension: Platform.OS === "ios" ? ".wav" : ".aac",
+  sampleRate: 16000,
+  numberOfChannels: 1,
+  bitRate: 64000,
+  android: {
+    extension: ".aac",
+    outputFormat: "aac_adts",
+    audioEncoder: "aac",
+  },
+  ios: {
+    outputFormat: ExpoAudio.IOSOutputFormat.LINEARPCM,
+    audioQuality: ExpoAudio.AudioQuality.MAX,
+    linearPCMBitDepth: 16,
+    linearPCMIsBigEndian: false,
+    linearPCMIsFloat: false,
+  },
+  web: { mimeType: "audio/webm", bitsPerSecond: 64000 },
+};
+
+// toISOString() devuelve UTC: en Argentina (UTC-3), después de las 21:00 daba el día siguiente.
+const toLocalISODate = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+    d.getDate(),
+  ).padStart(2, "0")}`;
 
 export default function GastosScreen() {
   const [listaGastos, setListaGastos] = useState<Transaction[]>([]);
@@ -99,26 +130,18 @@ export default function GastosScreen() {
   const [date, setDate] = useState(new Date());
   const [showDatePicker, setShowDatePicker] = useState(false);
 
-  // CONFIGURACIÓN DE AUDIO (WAV 16kHz)
-  const audioRecorder = ExpoAudio.useAudioRecorder({
-    extension: ".wav",
-    sampleRate: 16000,
-    numberOfChannels: 1,
-    bitRate: 128000,
-  });
+  // CONFIGURACIÓN DE AUDIO
+  const audioRecorder = ExpoAudio.useAudioRecorder(RECORDING_OPTIONS);
 
-  const isPressing = useRef<boolean>(false);
+  const isHolding = useRef(false); // el dedo sigue apoyado en el botón
+  const isStartingRef = useRef(false); // estamos pidiendo permiso / preparando
+  const isRecordingRef = useRef(false); // grabando de verdad
   const pressStartTime = useRef<number>(0);
   const [isRecordingUI, setIsRecordingUI] = useState(false);
   const [isProcessingVoice, setIsProcessingVoice] = useState(false);
 
   useEffect(() => {
     cargarDatosIniciales();
-    if (Platform.OS === "android") {
-      PermissionsAndroid.request(
-        PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
-      ).catch(console.warn);
-    }
   }, []);
 
   const cargarDatosIniciales = async () => {
@@ -154,97 +177,100 @@ export default function GastosScreen() {
   };
 
   // =====================================================================
-  // LÓGICA DE GRABACIÓN BLINDADA MEDIANTE NAMESPACE (iOS + Android)
+  // GRABACIÓN DE VOZ (expo-audio SDK 57) + ENVÍO A GEMINI
   // =====================================================================
 
-  const setAudioSessionForIOS = async (active: boolean) => {
-    if (Platform.OS !== "ios") return;
+  const releaseAudioSession = async () => {
     try {
-      // Usamos el objeto global ExpoAudio para prevenir crashes de "undefined"
-      if (typeof (ExpoAudio as any).setAudioModeAsync === "function") {
-        await (ExpoAudio as any).setAudioModeAsync({
-          allowsRecordingIOS: active,
-          playsInSilentModeIOS: true,
-        });
-      }
+      await ExpoAudio.setAudioModeAsync({ allowsRecording: false });
     } catch (e) {
-      console.warn("No se pudo configurar la sesión de audio:", e);
+      console.warn("No se pudo liberar la sesión de audio:", e);
     }
   };
 
   const startRecording = async () => {
+    if (isRecordingRef.current || isStartingRef.current || isProcessingVoice)
+      return;
+
+    if (categorias.length === 0) {
+      Alert.alert(
+        "Atención",
+        "Debes crear categorías antes de agregar gastos.",
+      );
+      return;
+    }
+
+    isHolding.current = true;
+    isStartingRef.current = true;
+
     try {
-      if (categorias.length === 0) {
-        Alert.alert(
-          "Atención",
-          "Debes crear categorías antes de agregar gastos.",
-        );
-        return;
-      }
-
-      isPressing.current = true;
-      let hasPermission = false;
-
-      // 1. Verificación de Permisos Dinámica
-      if (Platform.OS === "android") {
-        const granted = await PermissionsAndroid.request(
-          PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
-        );
-        hasPermission = granted === PermissionsAndroid.RESULTS.GRANTED;
-      } else {
-        if (typeof (ExpoAudio as any).requestPermissionsAsync === "function") {
-          const status = await (ExpoAudio as any).requestPermissionsAsync();
-          hasPermission = status?.granted || status?.status === "granted";
-        } else {
-          // Si Expo ocultó la función, permitimos que el sistema iOS muestre el cartel automáticamente al grabar
-          hasPermission = true;
-        }
-      }
-
-      if (!hasPermission) {
+      // 1. Permiso de micrófono (funciona igual en iOS y Android)
+      const { granted } = await ExpoAudio.requestRecordingPermissionsAsync();
+      if (!granted) {
+        isHolding.current = false;
         Alert.alert(
           "Permiso denegado",
           "Ve a la Configuración de tu celular y activa el Micrófono.",
         );
-        isPressing.current = false;
         return;
       }
 
-      if (!isPressing.current) return;
+      // 2. Sesión de audio (en expo-audio los campos son allowsRecording / playsInSilentMode)
+      await ExpoAudio.setAudioModeAsync({
+        allowsRecording: true,
+        playsInSilentMode: true,
+      });
 
-      // 2. EL CANDADO DE APPLE: Configuramos la sesión de forma segura
-      await setAudioSessionForIOS(true);
+      // 3. OBLIGATORIO: preparar el grabador antes de cada grabación.
+      //    Sin esto, record() no hace nada (Android lo ignora en silencio) y
+      //    isRecording queda en false. Además stop() "des-prepara" el grabador,
+      //    así que hay que volver a prepararlo cada vez.
+      await audioRecorder.prepareToRecordAsync();
 
-      // 3. Encendemos el hardware
-      pressStartTime.current = Date.now();
-      audioRecorder.record();
-
-      await new Promise((resolve) => setTimeout(resolve, 200));
-      if (!audioRecorder.isRecording) {
-        throw new Error("El sistema operativo bloqueó el micrófono.");
+      // El usuario soltó el botón mientras se preparaba: cancelamos limpio.
+      if (!isHolding.current) {
+        await audioRecorder.stop().catch(() => {});
+        await releaseAudioSession();
+        return;
       }
 
+      audioRecorder.record();
+      pressStartTime.current = Date.now();
+      isRecordingRef.current = true;
       setIsRecordingUI(true);
     } catch (err: any) {
       console.error("Error al iniciar grabación:", err);
-      Alert.alert(
-        "Fallo de Hardware",
-        err.message || "No se pudo encender el micrófono.",
-      );
-      isPressing.current = false;
+      isHolding.current = false;
+      isRecordingRef.current = false;
       setIsRecordingUI(false);
+      await audioRecorder.stop().catch(() => {});
+      await releaseAudioSession();
+      Alert.alert(
+        "No se pudo iniciar la grabación",
+        err?.message || "No se pudo encender el micrófono.",
+      );
+    } finally {
+      isStartingRef.current = false;
     }
   };
 
   const stopRecordingAndProcess = async () => {
-    if (!isRecordingUI) return;
+    isHolding.current = false;
+    if (!isRecordingRef.current) return;
 
-    // VALIDACIÓN ANTI-TAP (< 1.5s)
+    isRecordingRef.current = false;
+    setIsRecordingUI(false);
     const pressDuration = Date.now() - pressStartTime.current;
-    if (pressDuration < 1500) {
-      setIsRecordingUI(false);
-      audioRecorder.stop();
-      await setAudioSessionForIOS(false);
+
+    // stop() es asíncrono: hay que esperarlo para que el archivo quede finalizado
+    try {
+      await audioRecorder.stop();
+    } catch (e) {
+      console.warn("Error al detener la grabación:", e);
+    }
+    await releaseAudioSession();
+
+    if (pressDuration < MIN_RECORDING_MS) {
       Alert.alert(
         "Audio muy corto",
         "Mantén presionado el botón por más de 1.5 segundos para dictar tu gasto.",
@@ -252,29 +278,22 @@ export default function GastosScreen() {
       return;
     }
 
+    setIsProcessingVoice(true);
     try {
-      setIsRecordingUI(false);
-      setIsProcessingVoice(true);
-
-      // 1. Apagamos el micrófono
-      audioRecorder.stop();
-
-      // 2. DEVOLVEMOS EL CANDADO A APPLE
-      await setAudioSessionForIOS(false);
-
-      // 3. Retraso seguro de escritura en disco
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      if (!GEMINI_API_KEY) {
+        throw new Error("Falta configurar la API Key de Gemini.");
+      }
 
       const uri = audioRecorder.uri;
+      if (!uri) throw new Error("El sistema no guardó el archivo de audio.");
 
-      if (!uri)
-        throw new Error("Fallo crítico: El sistema no guardó el archivo WAV.");
+      // readAsStringAsync de "expo-file-system" lanza error en SDK 54+; se usa la clase File
+      const base64Audio = await new File(uri).base64();
+      const mimeType = uri.toLowerCase().endsWith(".wav")
+        ? "audio/wav"
+        : "audio/aac";
 
-      const base64Audio = await FileSystem.readAsStringAsync(uri, {
-        encoding: FileSystem.EncodingType.Base64,
-      });
-
-      const fechaHoy = new Date().toISOString().split("T")[0];
+      const fechaHoy = toLocalISODate(new Date());
       const nombresCategorias = categorias.map((c) => c.name).join(", ");
 
       const prompt = `
@@ -293,41 +312,64 @@ export default function GastosScreen() {
       `;
 
       const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            "x-goog-api-key": GEMINI_API_KEY,
+          },
           body: JSON.stringify({
             contents: [
               {
                 parts: [
                   { text: prompt },
-                  { inlineData: { mimeType: "audio/wav", data: base64Audio } },
+                  { inlineData: { mimeType, data: base64Audio } },
                 ],
               },
             ],
+            generationConfig: {
+              responseMimeType: "application/json",
+              temperature: 0,
+            },
           }),
         },
       );
 
       const data = await response.json();
 
-      if (data.error) throw new Error(data.error.message);
+      if (!response.ok || data.error) {
+        throw new Error(
+          `Gemini (${response.status}): ${data?.error?.message ?? "error desconocido"}`,
+        );
+      }
 
-      let jsonText = data.candidates[0].content.parts[0].text;
-      jsonText = jsonText
-        .replace(/```json/g, "")
-        .replace(/```/g, "")
+      const jsonText: string = (data.candidates?.[0]?.content?.parts ?? [])
+        .map((p: any) => p.text ?? "")
+        .join("")
+        .replace(/```json|```/g, "")
         .trim();
+
+      if (!jsonText) {
+        throw new Error(
+          "Gemini no devolvió texto (¿audio vacío o bloqueado?).",
+        );
+      }
 
       const gastoIA = JSON.parse(jsonText);
 
+      const monto = Number(gastoIA.amount);
+      if (!Number.isFinite(monto)) {
+        throw new Error("No se pudo entender el monto. Intenta de nuevo.");
+      }
+
       const categoriaEncontrada = categorias.find(
-        (c) => c.name.toLowerCase() === gastoIA.category.toLowerCase(),
+        (c) =>
+          c.name.toLowerCase() === String(gastoIA.category ?? "").toLowerCase(),
       );
 
-      setDescription(gastoIA.description);
-      setAmount(gastoIA.amount.toString());
+      setDescription(String(gastoIA.description ?? ""));
+      setAmount(String(monto));
       if (gastoIA.date) setDate(new Date(gastoIA.date + "T00:00:00"));
       if (categoriaEncontrada) setSelectedCategoryId(categoriaEncontrada.id);
 
@@ -336,7 +378,7 @@ export default function GastosScreen() {
       console.error("Error procesando voz", err);
       Alert.alert(
         "No se pudo procesar",
-        err.message ||
+        err?.message ||
           "Asegúrate de hablar claro e indicar monto y descripción.",
       );
     } finally {
@@ -359,7 +401,7 @@ export default function GastosScreen() {
       } = await supabase.auth.getUser();
       if (!user) return;
 
-      const fechaDB = date.toISOString().split("T")[0];
+      const fechaDB = toLocalISODate(date);
 
       const nuevaTransaccion = {
         user_id: user.id,
