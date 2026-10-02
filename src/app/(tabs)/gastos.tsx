@@ -76,7 +76,7 @@ const NOMBRES_MESES = [
   "dic",
 ];
 
-const GEMINI_API_KEY = "AQ.Ab8RN6Iz0KowG5MqSoBRKYhGjWSgLSsOkWhktYJID7ZBiajDXg"; // <-- pegá tu API Key acá
+const GEMINI_API_KEY = ""; // <-- pegá tu API Key acá
 // gemini-1.5-flash está dado de baja (404) y gemini-2.5-flash se apaga el 16/10/2026.
 // Revisá https://ai.google.dev/gemini-api/docs/deprecations para el modelo vigente.
 const GEMINI_MODEL = "gemini-3.5-flash";
