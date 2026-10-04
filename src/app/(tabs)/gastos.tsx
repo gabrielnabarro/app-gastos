@@ -1,36 +1,26 @@
 // src/app/(tabs)/gastos.tsx
 import { Ionicons } from "@expo/vector-icons";
-import DateTimePicker from "@react-native-community/datetimepicker";
-import { File } from "expo-file-system";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
   FlatList,
   Keyboard,
-  KeyboardAvoidingView,
-  Modal,
-  Platform,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
-  TouchableWithoutFeedback,
-  View,
+  View
 } from "react-native";
 import { PieChart } from "react-native-gifted-charts";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { supabase } from "../../../supabase";
+import ModalConfirmarEliminacion from "../../components/ModalConfirmarEliminacion";
+import ModalDetalleGasto from "../../components/ModalDetalleGasto";
+import ModalNuevoGasto from "../../components/ModalNuevoGasto";
 
-// SOLUCIÓN: Importamos el Namespace completo de la ÚNICA librería oficial.
-// Esto evita cualquier colapso por "undefined".
-import * as ExpoAudio from "expo-audio";
-
-interface Category {
-  id: string;
-  name: string;
-  icon: string | null;
-}
+// 1. IMPORTAMOS NUESTRO CUSTOM HOOK Y SUS INTERFACES
+import { Category, useVoiceExpense } from "../../hooks/useVoiceExpense";
 
 interface Transaction {
   id: string;
@@ -76,80 +66,8 @@ const NOMBRES_MESES = [
   "dic",
 ];
 
-const GEMINI_API_KEY = process.env.EXPO_PUBLIC_GEMINI_API_KEY;
-
-// gemini-1.5-flash está dado de baja (404) y gemini-2.5-flash se apaga el 16/10/2026.
-// Revisá https://ai.google.dev/gemini-api/docs/deprecations para el modelo vigente.
-// Se prueban en orden: si el primero está saturado (503) se pasa al siguiente.
-const GEMINI_MODELS = ["gemini-3.5-flash", "gemini-3.1-flash-lite"];
-const RETRYABLE_STATUS = [429, 500, 503, 504];
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-// Llama a Gemini con reintentos (backoff exponencial) y fallback de modelo.
-async function callGemini(body: object) {
-  let lastError = "error desconocido";
-  for (const model of GEMINI_MODELS) {
-    for (let intento = 0; intento < 3; intento++) {
-      try {
-        const response = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "x-goog-api-key": GEMINI_API_KEY,
-            },
-            body: JSON.stringify(body),
-          },
-        );
-        const data = await response.json();
-        if (response.ok && !data.error) return data;
-
-        lastError = `Gemini (${response.status}): ${data?.error?.message ?? "error desconocido"}`;
-        if (!RETRYABLE_STATUS.includes(response.status)) {
-          if (response.status === 404) break; // modelo inexistente: probar el siguiente
-          throw new Error(lastError); // key inválida, request mal armado, etc.
-        }
-      } catch (e: any) {
-        if (e?.message?.startsWith("Gemini (")) throw e;
-        lastError = e?.message ?? lastError; // error de red: se reintenta
-      }
-      await sleep(800 * 2 ** intento); // 0.8s, 1.6s, 3.2s
-    }
-  }
-  throw new Error(
-    `${lastError}\n\nEl servicio de IA está saturado. Probá de nuevo en unos segundos.`,
-  );
-}
-const MIN_RECORDING_MS = 1500;
-
-// WAV/PCM en iOS; AAC (ADTS) en Android, porque MediaRecorder de Android NO puede grabar WAV.
-// Los dos formatos son aceptados por Gemini (audio/wav y audio/aac).
-const RECORDING_OPTIONS: ExpoAudio.RecordingOptions = {
-  extension: Platform.OS === "ios" ? ".wav" : ".aac",
-  sampleRate: 16000,
-  numberOfChannels: 1,
-  bitRate: 64000,
-  android: {
-    extension: ".aac",
-    outputFormat: "aac_adts",
-    audioEncoder: "aac",
-  },
-  ios: {
-    outputFormat: ExpoAudio.IOSOutputFormat.LINEARPCM,
-    audioQuality: ExpoAudio.AudioQuality.MAX,
-    linearPCMBitDepth: 16,
-    linearPCMIsBigEndian: false,
-    linearPCMIsFloat: false,
-  },
-  web: { mimeType: "audio/webm", bitsPerSecond: 64000 },
-};
-
-// toISOString() devuelve UTC: en Argentina (UTC-3), después de las 21:00 daba el día siguiente.
 const toLocalISODate = (d: Date) =>
-  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
-    d.getDate(),
-  ).padStart(2, "0")}`;
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 
 export default function GastosScreen() {
   const [listaGastos, setListaGastos] = useState<Transaction[]>([]);
@@ -171,15 +89,13 @@ export default function GastosScreen() {
   const [date, setDate] = useState(new Date());
   const [showDatePicker, setShowDatePicker] = useState(false);
 
-  // CONFIGURACIÓN DE AUDIO
-  const audioRecorder = ExpoAudio.useAudioRecorder(RECORDING_OPTIONS);
-
-  const isHolding = useRef(false); // el dedo sigue apoyado en el botón
-  const isStartingRef = useRef(false); // estamos pidiendo permiso / preparando
-  const isRecordingRef = useRef(false); // grabando de verdad
-  const pressStartTime = useRef<number>(0);
-  const [isRecordingUI, setIsRecordingUI] = useState(false);
-  const [isProcessingVoice, setIsProcessingVoice] = useState(false);
+  // 2. INICIALIZAMOS LA LÓGICA DE AUDIO E IA INYECTANDO LAS CATEGORÍAS
+  const {
+    isRecordingUI,
+    isProcessingVoice,
+    startRecording,
+    stopRecordingAndProcess,
+  } = useVoiceExpense(categorias);
 
   useEffect(() => {
     cargarDatosIniciales();
@@ -217,195 +133,18 @@ export default function GastosScreen() {
     }
   };
 
-  // =====================================================================
-  // GRABACIÓN DE VOZ (expo-audio SDK 57) + ENVÍO A GEMINI
-  // =====================================================================
+  // 3. FUNCIÓN PUENTE: Maneja el resultado del Hook y actualiza la UI
+  const handleStopRecording = async () => {
+    const result = await stopRecordingAndProcess();
 
-  const releaseAudioSession = async () => {
-    try {
-      await ExpoAudio.setAudioModeAsync({ allowsRecording: false });
-    } catch (e) {
-      console.warn("No se pudo liberar la sesión de audio:", e);
-    }
-  };
-
-  const startRecording = async () => {
-    if (isRecordingRef.current || isStartingRef.current || isProcessingVoice)
-      return;
-
-    if (categorias.length === 0) {
-      Alert.alert(
-        "Atención",
-        "Debes crear categorías antes de agregar gastos.",
-      );
-      return;
-    }
-
-    isHolding.current = true;
-    isStartingRef.current = true;
-
-    try {
-      // 1. Permiso de micrófono (funciona igual en iOS y Android)
-      const { granted } = await ExpoAudio.requestRecordingPermissionsAsync();
-      if (!granted) {
-        isHolding.current = false;
-        Alert.alert(
-          "Permiso denegado",
-          "Ve a la Configuración de tu celular y activa el Micrófono.",
-        );
-        return;
-      }
-
-      // 2. Sesión de audio (en expo-audio los campos son allowsRecording / playsInSilentMode)
-      await ExpoAudio.setAudioModeAsync({
-        allowsRecording: true,
-        playsInSilentMode: true,
-      });
-
-      // 3. OBLIGATORIO: preparar el grabador antes de cada grabación.
-      //    Sin esto, record() no hace nada (Android lo ignora en silencio) y
-      //    isRecording queda en false. Además stop() "des-prepara" el grabador,
-      //    así que hay que volver a prepararlo cada vez.
-      await audioRecorder.prepareToRecordAsync();
-
-      // El usuario soltó el botón mientras se preparaba: cancelamos limpio.
-      if (!isHolding.current) {
-        await audioRecorder.stop().catch(() => {});
-        await releaseAudioSession();
-        return;
-      }
-
-      audioRecorder.record();
-      pressStartTime.current = Date.now();
-      isRecordingRef.current = true;
-      setIsRecordingUI(true);
-    } catch (err: any) {
-      console.error("Error al iniciar grabación:", err);
-      isHolding.current = false;
-      isRecordingRef.current = false;
-      setIsRecordingUI(false);
-      await audioRecorder.stop().catch(() => {});
-      await releaseAudioSession();
-      Alert.alert(
-        "No se pudo iniciar la grabación",
-        err?.message || "No se pudo encender el micrófono.",
-      );
-    } finally {
-      isStartingRef.current = false;
-    }
-  };
-
-  const stopRecordingAndProcess = async () => {
-    isHolding.current = false;
-    if (!isRecordingRef.current) return;
-
-    isRecordingRef.current = false;
-    setIsRecordingUI(false);
-    const pressDuration = Date.now() - pressStartTime.current;
-
-    // stop() es asíncrono: hay que esperarlo para que el archivo quede finalizado
-    try {
-      await audioRecorder.stop();
-    } catch (e) {
-      console.warn("Error al detener la grabación:", e);
-    }
-    await releaseAudioSession();
-
-    if (pressDuration < MIN_RECORDING_MS) {
-      Alert.alert(
-        "Audio muy corto",
-        "Mantén presionado el botón por más de 1.5 segundos para dictar tu gasto.",
-      );
-      return;
-    }
-
-    setIsProcessingVoice(true);
-    try {
-      if (!GEMINI_API_KEY) {
-        throw new Error("Falta configurar la API Key de Gemini.");
-      }
-
-      const uri = audioRecorder.uri;
-      if (!uri) throw new Error("El sistema no guardó el archivo de audio.");
-
-      // readAsStringAsync de "expo-file-system" lanza error en SDK 54+; se usa la clase File
-      const base64Audio = await new File(uri).base64();
-      const mimeType = uri.toLowerCase().endsWith(".wav")
-        ? "audio/wav"
-        : "audio/aac";
-
-      const fechaHoy = toLocalISODate(new Date());
-      const nombresCategorias = categorias.map((c) => c.name).join(", ");
-
-      const prompt = `
-        Eres un asistente financiero experto.
-        Escucha el audio adjunto y extrae los datos del gasto. 
-        Hoy es ${fechaHoy}. Si el usuario dice "ayer", calcula la fecha correcta.
-        Las categorías válidas en la base de datos son: ${nombresCategorias}. 
-        
-        Devuelve ÚNICAMENTE un objeto JSON válido con esta estructura exacta, sin texto adicional ni formato Markdown:
-        {
-          "description": "nombre descriptivo y corto",
-          "amount": numero_entero_sin_simbolos,
-          "date": "YYYY-MM-DD",
-          "category": "nombre de la categoria más parecida de la lista proporcionada"
-        }
-      `;
-
-      const data = await callGemini({
-        contents: [
-          {
-            parts: [
-              { text: prompt },
-              { inlineData: { mimeType, data: base64Audio } },
-            ],
-          },
-        ],
-        generationConfig: {
-          responseMimeType: "application/json",
-          temperature: 0,
-        },
-      });
-
-      const jsonText: string = (data.candidates?.[0]?.content?.parts ?? [])
-        .map((p: any) => p.text ?? "")
-        .join("")
-        .replace(/```json|```/g, "")
-        .trim();
-
-      if (!jsonText) {
-        throw new Error(
-          "Gemini no devolvió texto (¿audio vacío o bloqueado?).",
-        );
-      }
-
-      const gastoIA = JSON.parse(jsonText);
-
-      const monto = Number(gastoIA.amount);
-      if (!Number.isFinite(monto)) {
-        throw new Error("No se pudo entender el monto. Intenta de nuevo.");
-      }
-
-      const categoriaEncontrada = categorias.find(
-        (c) =>
-          c.name.toLowerCase() === String(gastoIA.category ?? "").toLowerCase(),
-      );
-
-      setDescription(String(gastoIA.description ?? ""));
-      setAmount(String(monto));
-      if (gastoIA.date) setDate(new Date(gastoIA.date + "T00:00:00"));
-      if (categoriaEncontrada) setSelectedCategoryId(categoriaEncontrada.id);
+    // Si Gemini devuelve datos válidos, rellenamos el formulario y abrimos el modal
+    if (result) {
+      setDescription(result.description);
+      setAmount(result.amount);
+      setDate(result.date);
+      if (result.categoryId) setSelectedCategoryId(result.categoryId);
 
       setModalNuevoVisible(true);
-    } catch (err: any) {
-      console.error("Error procesando voz", err);
-      Alert.alert(
-        "No se pudo procesar",
-        err?.message ||
-          "Asegúrate de hablar claro e indicar monto y descripción.",
-      );
-    } finally {
-      setIsProcessingVoice(false);
     }
   };
 
@@ -508,8 +247,12 @@ export default function GastosScreen() {
       Number(fechaSplit[2]),
     );
     const fechaFormat = `${String(fechaLocal.getDate()).padStart(2, "0")}/${String(fechaLocal.getMonth() + 1).padStart(2, "0")}`;
-    const matchDate = fechaFormat.includes(query) || gasto.date.includes(query);
-    return matchDesc || matchCat || matchDate;
+    return (
+      matchDesc ||
+      matchCat ||
+      fechaFormat.includes(query) ||
+      gasto.date.includes(query)
+    );
   });
 
   const gastosAgrupados = gastosFiltrados.reduce(
@@ -660,7 +403,7 @@ export default function GastosScreen() {
         <TouchableOpacity
           style={[styles.fabVoice, isRecordingUI && styles.fabRecording]}
           onPressIn={startRecording}
-          onPressOut={stopRecordingAndProcess}
+          onPressOut={handleStopRecording}
           disabled={isProcessingVoice}
           activeOpacity={0.8}
         >
@@ -688,230 +431,39 @@ export default function GastosScreen() {
         </TouchableOpacity>
       </View>
 
-      <Modal visible={modalNuevoVisible} animationType="slide" transparent>
-        <TouchableWithoutFeedback onPress={() => Keyboard.dismiss()}>
-          <View style={styles.modalOverlay}>
-            <KeyboardAvoidingView
-              behavior={Platform.OS === "ios" ? "padding" : "height"}
-              style={styles.keyboardAvoiding}
-            >
-              <View style={styles.modalContent}>
-                <Text style={styles.modalTitle}>Nuevo Gasto</Text>
+      <ModalNuevoGasto
+        visible={modalNuevoVisible}
+        onClose={() => {
+          setModalNuevoVisible(false);
+          setDescription("");
+          setAmount("");
+          setDate(new Date());
+        }}
+        onSave={agregarGasto}
+        description={description}
+        setDescription={setDescription}
+        amount={amount}
+        setAmount={setAmount}
+        date={date}
+        setDate={setDate}
+        categorias={categorias}
+        selectedCategoryId={selectedCategoryId}
+        setSelectedCategoryId={setSelectedCategoryId}
+        showDatePicker={showDatePicker}
+        setShowDatePicker={setShowDatePicker}
+      />
 
-                <TextInput
-                  style={styles.input}
-                  placeholder="Descripción (ej. Supermercado)"
-                  placeholderTextColor="#94A3B8"
-                  value={description}
-                  onChangeText={setDescription}
-                />
+      <ModalDetalleGasto
+        visible={modalDetalleVisible}
+        onClose={() => setModalDetalleVisible(false)}
+        gasto={gastoSeleccionado}
+      />
 
-                <TextInput
-                  style={styles.input}
-                  placeholder="Monto (ej. 15000)"
-                  placeholderTextColor="#94A3B8"
-                  keyboardType="numeric"
-                  value={amount}
-                  onChangeText={setAmount}
-                />
-
-                <Text style={styles.labelCategoria}>Fecha del Gasto:</Text>
-                <TouchableOpacity
-                  style={styles.datePickerBtn}
-                  onPress={() => setShowDatePicker(true)}
-                >
-                  <Text style={styles.datePickerText}>
-                    {date.toLocaleDateString("es-AR", {
-                      weekday: "short",
-                      day: "2-digit",
-                      month: "short",
-                      year: "numeric",
-                    })}
-                  </Text>
-                </TouchableOpacity>
-
-                {showDatePicker && (
-                  <DateTimePicker
-                    value={date}
-                    mode="date"
-                    display="default"
-                    maximumDate={new Date()}
-                    onChange={(event, selectedDate) => {
-                      setShowDatePicker(Platform.OS === "ios");
-                      if (event.type === "set" && selectedDate) {
-                        setDate(selectedDate);
-                        if (Platform.OS === "android") setShowDatePicker(false);
-                      } else {
-                        setShowDatePicker(false);
-                      }
-                    }}
-                  />
-                )}
-
-                <Text style={styles.labelCategoria}>Categoría:</Text>
-                <View style={styles.categoriasContainer}>
-                  {categorias.map((cat) => (
-                    <TouchableOpacity
-                      key={cat.id}
-                      style={[
-                        styles.chip,
-                        selectedCategoryId === cat.id && styles.chipActive,
-                      ]}
-                      onPress={() => {
-                        setSelectedCategoryId(cat.id);
-                        Keyboard.dismiss();
-                      }}
-                    >
-                      <Text
-                        style={[
-                          styles.chipText,
-                          selectedCategoryId === cat.id &&
-                            styles.chipTextActive,
-                        ]}
-                      >
-                        {cat.icon ? `${cat.icon} ` : ""}
-                        {cat.name}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-
-                <View style={styles.modalButtons}>
-                  <TouchableOpacity
-                    style={[styles.btn, styles.btnCancel]}
-                    onPress={() => {
-                      setModalNuevoVisible(false);
-                      setDescription("");
-                      setAmount("");
-                      setDate(new Date());
-                    }}
-                  >
-                    <Text style={styles.btnTextCancel}>Cancelar</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[styles.btn, styles.btnSave]}
-                    onPress={agregarGasto}
-                  >
-                    <Text style={styles.btnTextSave}>Guardar</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            </KeyboardAvoidingView>
-          </View>
-        </TouchableWithoutFeedback>
-      </Modal>
-
-      <Modal visible={modalDetalleVisible} animationType="fade" transparent>
-        <TouchableOpacity
-          style={styles.modalOverlay}
-          activeOpacity={1}
-          onPress={() => setModalDetalleVisible(false)}
-        >
-          <TouchableWithoutFeedback>
-            <View style={styles.modalContent}>
-              {gastoSeleccionado && (
-                <>
-                  <Text style={styles.modalTitle}>Detalle de Transacción</Text>
-                  <View style={styles.detailBox}>
-                    <View style={styles.detailRow}>
-                      <Text style={styles.detailLabel}>Descripción:</Text>
-                      <Text style={styles.detailValue}>
-                        {gastoSeleccionado.description}
-                      </Text>
-                    </View>
-                    <View style={styles.detailRow}>
-                      <Text style={styles.detailLabel}>Monto:</Text>
-                      <Text
-                        style={[
-                          styles.detailValue,
-                          { color: "#EF4444", fontWeight: "bold" },
-                        ]}
-                      >
-                        $
-                        {Number(gastoSeleccionado.amount).toLocaleString(
-                          "es-AR",
-                        )}
-                      </Text>
-                    </View>
-                    <View style={styles.detailRow}>
-                      <Text style={styles.detailLabel}>Fecha:</Text>
-                      <Text style={styles.detailValue}>
-                        {new Date(
-                          gastoSeleccionado.date + "T00:00:00",
-                        ).toLocaleDateString("es-AR", {
-                          day: "2-digit",
-                          month: "long",
-                          year: "numeric",
-                        })}
-                      </Text>
-                    </View>
-                    <View style={styles.detailRow}>
-                      <Text style={styles.detailLabel}>Horario:</Text>
-                      <Text style={styles.detailValue}>
-                        {gastoSeleccionado.created_at
-                          ? new Date(
-                              gastoSeleccionado.created_at,
-                            ).toLocaleTimeString("es-AR", {
-                              hour: "2-digit",
-                              minute: "2-digit",
-                            })
-                          : "No disponible"}
-                      </Text>
-                    </View>
-                    <View style={styles.detailRow}>
-                      <Text style={styles.detailLabel}>Categoría:</Text>
-                      <Text style={styles.detailValue}>
-                        {gastoSeleccionado.categories?.icon
-                          ? `${gastoSeleccionado.categories.icon} `
-                          : ""}
-                        {gastoSeleccionado.categories?.name || "Desconocido"}
-                      </Text>
-                    </View>
-                  </View>
-                </>
-              )}
-              <TouchableOpacity
-                style={styles.btnCerrar}
-                onPress={() => setModalDetalleVisible(false)}
-              >
-                <Text style={styles.btnCerrarText}>Aceptar</Text>
-              </TouchableOpacity>
-            </View>
-          </TouchableWithoutFeedback>
-        </TouchableOpacity>
-      </Modal>
-
-      <Modal visible={modalEliminarVisible} animationType="fade" transparent>
-        <TouchableOpacity
-          style={styles.modalOverlay}
-          activeOpacity={1}
-          onPress={() => setModalEliminarVisible(false)}
-        >
-          <TouchableWithoutFeedback>
-            <View style={styles.modalContent}>
-              <Text style={styles.modalTitle}>Eliminar Gasto</Text>
-              <Text style={styles.modalText}>
-                ¿Estás seguro de que deseas eliminar este gasto? Esta acción no
-                se puede deshacer.
-              </Text>
-              <View style={styles.modalButtons}>
-                <TouchableOpacity
-                  style={[styles.btn, styles.btnCancel]}
-                  onPress={() => setModalEliminarVisible(false)}
-                >
-                  <Text style={styles.btnTextCancel}>Cancelar</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.btn, { backgroundColor: "#EF4444" }]}
-                  onPress={ejecutarEliminacion}
-                >
-                  <Text style={styles.btnTextSave}>Eliminar</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          </TouchableWithoutFeedback>
-        </TouchableOpacity>
-      </Modal>
+      <ModalConfirmarEliminacion
+        visible={modalEliminarVisible}
+        onClose={() => setModalEliminarVisible(false)}
+        onConfirm={ejecutarEliminacion}
+      />
     </SafeAreaView>
   );
 }
@@ -1004,7 +556,6 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
   },
-
   fabContainer: {
     position: "absolute",
     bottom: 24,
@@ -1040,7 +591,6 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
   },
   fabRecording: { backgroundColor: "#EF4444", transform: [{ scale: 1.1 }] },
-
   modalOverlay: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.7)",

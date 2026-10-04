@@ -1,23 +1,41 @@
 // src/app/(tabs)/_layout.tsx
+import { Ionicons } from "@expo/vector-icons";
 import { Tabs } from "expo-router";
 
-export default function TabLayout() {
+export default function TabsLayout() {
   return (
     <Tabs
       screenOptions={{
-        headerShown: false, // Oculta el header superior
+        headerShown: false,
+        tabBarActiveTintColor: "#3B82F6", // Color azul estilo Tailwind para la pestaña activa
         tabBarStyle: {
-          backgroundColor: "#1E293B", // Mismo color de las tarjetas
-          borderTopColor: "#334155", // Borde sutil
-          height: 60,
-          paddingBottom: 10,
+          backgroundColor: "#1E293B",
+          borderTopColor: "#334155",
+          paddingBottom: 5,
         },
-        tabBarActiveTintColor: "#3B82F6", // Azul brillante cuando está seleccionado
-        tabBarInactiveTintColor: "#94A3B8", // Gris cuando no está seleccionado
       }}
     >
-      <Tabs.Screen name="gastos" options={{ title: "Gastos" }} />
-      <Tabs.Screen name="reportes" options={{ title: "Reportes" }} />
+      {/* Pestaña 1: Gastos */}
+      <Tabs.Screen
+        name="gastos"
+        options={{
+          title: "Gastos",
+          tabBarIcon: ({ color }) => (
+            <Ionicons name="wallet-outline" size={24} color={color} />
+          ),
+        }}
+      />
+
+      {/* Pestaña 2: Reportes (Esta es la que te desapareció) */}
+      <Tabs.Screen
+        name="reportes"
+        options={{
+          title: "Reportes",
+          tabBarIcon: ({ color }) => (
+            <Ionicons name="pie-chart-outline" size={24} color={color} />
+          ),
+        }}
+      />
     </Tabs>
   );
 }
