@@ -3,18 +3,22 @@ import { File } from "expo-file-system";
 import { useRef, useState } from "react";
 import { Alert, Platform } from "react-native";
 
-// Leemos la API KEY de forma segura
-const GEMINI_API_KEY = process.env.EXPO_PUBLIC_GEMINI_API_KEY || "";
+// 1. Sanitización de la API Key para evitar caracteres invisibles
+const GEMINI_API_KEY = (process.env.EXPO_PUBLIC_GEMINI_API_KEY || "")
+  .trim()
+  .replace(/['"]/g, "");
 
-const GEMINI_MODELS = ["gemini-3.5-flash", "gemini-3.1-flash-lite"];
+// 2. Prioridad de modelo invertida para máxima velocidad
+const GEMINI_MODELS = ["gemini-3.1-flash-lite", "gemini-3.5-flash"];
 const RETRYABLE_STATUS = [429, 500, 503, 504];
 const MIN_RECORDING_MS = 1500;
 
+// 3. Compresión agresiva de audio (16000 bps) para reducir la latencia de subida
 const RECORDING_OPTIONS: ExpoAudio.RecordingOptions = {
   extension: Platform.OS === "ios" ? ".wav" : ".aac",
   sampleRate: 16000,
   numberOfChannels: 1,
-  bitRate: 64000,
+  bitRate: 16000,
   android: {
     extension: ".aac",
     outputFormat: "aac_adts",
@@ -22,12 +26,12 @@ const RECORDING_OPTIONS: ExpoAudio.RecordingOptions = {
   },
   ios: {
     outputFormat: ExpoAudio.IOSOutputFormat.LINEARPCM,
-    audioQuality: ExpoAudio.AudioQuality.MAX,
+    audioQuality: ExpoAudio.AudioQuality.LOW,
     linearPCMBitDepth: 16,
     linearPCMIsBigEndian: false,
     linearPCMIsFloat: false,
   },
-  web: { mimeType: "audio/webm", bitsPerSecond: 64000 },
+  web: { mimeType: "audio/webm", bitsPerSecond: 16000 },
 };
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -65,7 +69,8 @@ async function callGemini(body: object) {
         if (e?.message?.startsWith("Gemini (")) throw e;
         lastError = e?.message ?? lastError;
       }
-      await sleep(800 * 2 ** intento);
+      // 4. Reducción del ciclo de espera de red (de 800ms a 300ms base)
+      await sleep(300 * 2 ** intento);
     }
   }
   throw new Error(
@@ -73,7 +78,6 @@ async function callGemini(body: object) {
   );
 }
 
-// Exportamos las interfaces necesarias
 export interface Category {
   id: string;
   name: string;
@@ -207,20 +211,9 @@ export function useVoiceExpense(categorias: Category[]) {
       const fechaHoy = toLocalISODate(new Date());
       const nombresCategorias = categorias.map((c) => c.name).join(", ");
 
-      const prompt = `
-            Eres un asistente financiero experto.
-            Escucha el audio adjunto y extrae los datos del gasto. 
-            Hoy es ${fechaHoy}. Si el usuario dice "ayer", calcula la fecha correcta.
-            Las categorías válidas en la base de datos son: ${nombresCategorias}. 
-            
-            Devuelve ÚNICAMENTE un objeto JSON válido con esta estructura exacta, sin texto adicional ni formato Markdown:
-            {
-              "description": "nombre descriptivo y corto",
-              "amount": numero_entero_sin_simbolos,
-              "date": "YYYY-MM-DD",
-              "category": "nombre de la categoria más parecida de la lista proporcionada"
-            }
-          `;
+      // 5. Prompt minimizado para acelerar la latencia de análisis semántico
+      const prompt = `Analiza el audio y extrae gasto. Hoy: ${fechaHoy}. Categorías: ${nombresCategorias}.
+Responde SOLO JSON válido: {"description":"texto","amount":numero,"date":"YYYY-MM-DD","category":"nombre"}`;
 
       const data = await callGemini({
         contents: [
@@ -237,7 +230,6 @@ export function useVoiceExpense(categorias: Category[]) {
         },
       });
 
-      // Extracción robusta de JSON, ignorando posibles saludos de la IA
       let jsonText: string = (data.candidates?.[0]?.content?.parts ?? [])
         .map((p: any) => p.text ?? "")
         .join("");
